@@ -1,0 +1,11 @@
+.{
+    .name = .redstone_sat,
+    .version = "0.0.0",
+    .fingerprint = 0x5b9aab2bb0dfbc17,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
