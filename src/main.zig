@@ -4,107 +4,6 @@ const assert = std.debug.assert;
 const Writer = std.Io.Writer;
 const Io = std.Io;
 
-// Block types:
-
-// ###
-// ### <-- block
-// ###
-// - can be weakly powered
-// - can be strongly powered
-
-//  o
-//  |  <-- upright torch
-//  |
-// - can be ON OR OFF
-// - must have a block underneath itself
-// - the torch is OFF if the block underneath is strongly powered
-// - the torch is OFF if the block underneath is weakly powered
-// - the torch is ON if the block underneath is NOT powered
-
-//   o
-//  /  <-- right facing torch
-// /
-// - can be ON OR OFF
-// - must have a block to the left
-// - the torch is OFF if the block to the left is strongly powered
-// - the torch is OFF if the block to the left is weakly powered
-// - the torch is ON if the block to the left is NOT powered
-
-// o
-//  \  <-- left facing torch
-//   \
-// - can be ON OR OFF
-// - must have a block to the right
-// - the torch is OFF if the block to the right is strongly powered
-// - the torch is OFF if the block to the right is weakly powered
-// - the torch is ON if the block to the right is NOT powered
-
-//
-//     <-- bottom redstone dust
-// ===
-// - can have signal strength [0, 16)
-// - must have block underneath itself
-// - if there is no block above itself:
-//     - must not have redstone dust to the upper-left
-//     - must not have redstone dust to the upper-right
-// - if there is a left-facing torch to the right:
-//     - the dust has signal strength 15 if it is ON
-// - if there is a right-facing torch to the left:
-//     - the dust has signal strength 15 if it is ON
-// - if there is a left-facing OR right-facing torch above:
-//     - the dust has signal strength 15 if it is ON
-// - if there is bottom OR left dust to the left:
-//     - if the signal strength of the other dust is higher:
-//         - if the signal strength of the dust is greater than 1:
-//             - the dust has a minimum signal strength of one less
-//         - if the signal strength of the dust is between [0, 1]:
-//             - the dust has a minimum signal strength of zero
-// - if there is a bottom or right dust to the right:
-//     - if the signal strength of the other dust is higher:
-//         - if the signal strength of the dust is greater than 1:
-//             - the dust has a minimum signal strength of one less
-//         - if the signal strength of the dust is between [0, 1]:
-//             - the dust has a minimum signal strength of zero
-// - if there is a right or dipping redstone dust to the bottom-right:
-//     - if the signal strength of the other dust is higher:
-//         - if the signal strength of the dust is greater than 1:
-//             - the dust has a minimum signal strength of one less
-//         - if the signal strength of the dust is between [0, 1]:
-//             - the dust has a minimum signal strength of zero
-// - if there is a left or dipping redstone dust to the bottom-left:
-//     - if the signal strength of the other dust is higher:
-//         - if the signal strength of the dust is greater than 1:
-//             - the dust has a minimum signal strength of one less
-//         - if the signal strength of the dust is between [0, 1]:
-//             - the dust has a minimum signal strength of zero
-
-// =
-// =   <-- left redstone dust
-// ===
-// - can have signal strength [0, 16)
-// - must have block to the left and bottom
-// - must not have block above itself
-// - must have redstone dust to the upper-left
-// - must not have redstone dust to the upper-right
-
-//   =
-//   = <-- right redstone dust
-// ===
-// - can have signal strength [0, 16)
-// - must have block to the right and bottom
-// - must not have block above itself
-// - must not have redstone dust to the upper-left
-// - must have redstone dust to the upper-right
-
-// = =
-// = = <-- dipping redstone dust
-// ===
-// - can have signal strength [0, 16)
-// - must have block to the left, right, and bottom
-// - must not have block above itself
-// - must have redstone dust to the upper-left
-// - must have redstone dust to the upper-right
-
 // ----------------------------------------------------------------------- MAIN
 
 pub fn main() !void {
@@ -175,11 +74,6 @@ var is_left_torch: [width][height]u64 = undefined;
 // right torches are connected to the block on their left
 var is_right_torch: [width][height]u64 = undefined;
 
-// left dust is when a dust is joined to an upper-left dust
-var is_left_dust: [width][height]u64 = undefined;
-// right dust is when a dust is joined to an upper-right dust
-var is_right_dust: [width][height]u64 = undefined;
-
 // torch state, whether they are on or off
 var is_torch_on: [states][width][height]u64 = undefined;
 // blocks that are powered by redstone dust
@@ -208,8 +102,6 @@ fn initializeGlobals() !void {
             is_standing_torch[w][h] = alloc();
             is_left_torch[w][h] = alloc();
             is_right_torch[w][h] = alloc();
-            is_left_dust[w][h] = alloc();
-            is_right_dust[w][h] = alloc();
 
             for (0..states) |s| {
                 is_torch_on[s][w][h] = alloc();
@@ -253,9 +145,6 @@ fn decodeMain(io: Io) !void {
     var block_is_left_torch: [width][height]bool = @splat(@splat(false));
     var block_is_right_torch: [width][height]bool = @splat(@splat(false));
     var block_is_standing_torch: [width][height]bool = @splat(@splat(false));
-
-    var block_is_left_dust: [width][height]bool = @splat(@splat(false));
-    var block_is_right_dust: [width][height]bool = @splat(@splat(false));
 
     while (true) {
         allocating.clearRetainingCapacity();
@@ -301,12 +190,6 @@ fn decodeMain(io: Io) !void {
                     } else if (decoded == is_right_torch[w][h]) {
                         block_is_right_torch[w][h] = true;
                         continue :outer;
-                    } else if (decoded == is_left_dust[w][h]) {
-                        block_is_left_dust[w][h] = true;
-                        continue :outer;
-                    } else if (decoded == is_right_dust[w][h]) {
-                        block_is_right_dust[w][h] = true;
-                        continue :outer;
                     }
                 }
             }
@@ -326,18 +209,7 @@ fn decodeMain(io: Io) !void {
                     } else if (block_is_block[x][y]) {
                         try stdout.writeByte(block_display[sub_row][sub_col]);
                     } else if (block_is_dust[x][y]) {
-                        const left = block_is_left_dust[x][y];
-                        const right = block_is_right_dust[x][y];
-
-                        if (left and right) {
-                            try stdout.writeByte(dip_dust_display[sub_row][sub_col]);
-                        } else if (left) {
-                            try stdout.writeByte(left_dust_display[sub_row][sub_col]);
-                        } else if (right) {
-                            try stdout.writeByte(right_dust_display[sub_row][sub_col]);
-                        } else {
-                            try stdout.writeByte(flat_dust_display[sub_row][sub_col]);
-                        }
+                        try stdout.writeByte(dust_display[sub_row][sub_col]);
                     } else if (block_is_torch[x][y]) {
                         if (block_is_left_torch[x][y]) {
                             try stdout.writeByte(left_torch_display[sub_row][sub_col]);
@@ -366,16 +238,55 @@ fn decodeMain(io: Io) !void {
 
 const air_display: [3][3]u8 = .{ "   ".*, " . ".*, "   ".* };
 const block_display: [3][3]u8 = .{ "###".*, "###".*, "###".* };
-const flat_dust_display: [3][3]u8 = .{ "   ".*, "   ".*, "%%%".* };
-const left_dust_display: [3][3]u8 = .{ "%  ".*, "%  ".*, "%%%".* };
-const right_dust_display: [3][3]u8 = .{ "  %".*, "  %".*, "%%%".* };
-const dip_dust_display: [3][3]u8 = .{ "% %".*, "% %".*, "%%%".* };
+const dust_display: [3][3]u8 = .{ "   ".*, "   ".*, "%%%".* };
 const standing_torch_display: [3][3]u8 = .{ " o ".*, " | ".*, " | ".* };
 const left_torch_display: [3][3]u8 = .{ "o  ".*, " \\ ".*, "  \\".* };
 const right_torch_display: [3][3]u8 = .{ "  o".*, " / ".*, "/  ".* };
 const input_display: [3][3]u8 = .{ "III".*, " I ".*, "III".* };
 const output_display: [3][3]u8 = .{ "OOO".*, "O O".*, "OOO".* };
-const unknown_display: [3][3]u8 = .{ "? ?".*, " ? ".*, "? ?".* };
+const unknown_display: [3][3]u8 = .{ "???".*, "???".*, "???".* };
+
+fn isBlockOffset(x: u64, x_off: i64, y: u64, y_off: i64) u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return false_bit;
+    return is_block[sum_x][sum_y];
+}
+
+fn isDustPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return false_bit;
+    return is_dust_powered[state][sum_x][sum_y];
+}
+
+fn isTorchOnOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return false_bit;
+    return is_torch_on[state][sum_x][sum_y];
+}
+
+fn isWeaklyPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return false_bit;
+    return is_weakly_powered[state][sum_x][sum_y];
+}
+
+fn isStronglyPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return false_bit;
+    return is_strongly_powered[state][sum_x][sum_y];
+}
+
+fn signalStrengthOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) [4]u64 {
+    const sum_x = x +% @as(u64, @bitCast(x_off));
+    const sum_y = y +% @as(u64, @bitCast(y_off));
+    if (sum_x >= width or sum_y >= height) return @splat(false_bit);
+    return signal_strength[state][sum_x][sum_y];
+}
 
 // Prohibits air, dust, torch, and blocks from overlapping
 fn enforceSingleBlockType() !void {
@@ -427,55 +338,6 @@ fn enforceSingleTorchType() !void {
             try constrain(&.{ c, d }, &.{ 0, 0 });
         }
     }
-}
-
-fn isDustOffset(x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_dust[sum_x][sum_y];
-}
-
-fn isBlockOffset(x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_block[sum_x][sum_y];
-}
-
-fn isDustPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_dust_powered[state][sum_x][sum_y];
-}
-
-fn isTorchOffset(x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_torch[sum_x][sum_y];
-}
-
-fn isTorchOnOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_torch_on[state][sum_x][sum_y];
-}
-
-fn isStronglyPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return is_strongly_powered[state][sum_x][sum_y];
-}
-
-fn signalStrengthOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64, bit: u2) u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return false_bit;
-    return signal_strength[state][sum_x][sum_y][bit];
 }
 
 // Prohibits dust from hanging in mid-air
@@ -575,26 +437,14 @@ fn enforceStrongPowering() !void {
     }
 }
 
-// dust is powered IFF it's signal strength is NOT zero
+// dust is powered iff it's signal strength is not zero
 fn enforceDustIsPowered() !void {
     for (0..states) |state| {
         for (0..width) |x| {
             for (0..height) |y| {
-                const a = is_dust_powered[state][x][y];
-                const b = signal_strength[state][x][y][0];
-                const c = signal_strength[state][x][y][1];
-                const d = signal_strength[state][x][y][2];
-                const e = signal_strength[state][x][y][3];
-
-                // either the dust is NOT powered, OR
-                // one of the signal strength bits is ON
-                try constrain(&.{ a, b, c, d, e }, &.{ 0, 1, 1, 1, 1 });
-
-                // any signal strength bit implies the dust is powered
-                try constrain(&.{ a, b }, &.{ 1, 0 });
-                try constrain(&.{ a, c }, &.{ 1, 0 });
-                try constrain(&.{ a, d }, &.{ 1, 0 });
-                try constrain(&.{ a, e }, &.{ 1, 0 });
+                const is_zero = alloc();
+                try iszero4(signal_strength[state][x][y], is_zero);
+                try bitnot(is_dust_powered[state][x][y], is_zero);
             }
         }
     }
@@ -605,82 +455,50 @@ fn enforceDustSignalExistence() !void {
     for (0..states) |state| {
         for (0..width) |x| {
             for (0..height) |y| {
-                const a = is_dust[x][y];
-
-                for (0..4) |bit_pos| {
-                    const b = signal_strength[state][x][y][bit_pos];
-                    try constrain(&.{ a, b }, &.{ 1, 0 });
-                }
+                const not_dust = alloc();
+                try bitnot(not_dust, is_dust[x][y]);
+                const is_zero = alloc();
+                try iszero4(signal_strength[state][x][y], is_zero);
+                try bitimp(not_dust, is_zero);
             }
         }
     }
 }
 
-// torches are on IFF their supporting block is not powered
+// torches are on iff their supporting block is not powered
 fn enforceTorchPower() !void {
     for (0..states) |state| {
-        for (0..width - 1) |x| {
-            for (0..height) |y| {
-                const a = is_left_torch[x][y];
-                const b = is_weakly_powered[state][x + 1][y];
-                const c = is_strongly_powered[state][x + 1][y];
-                const d = is_torch_on[state][x][y];
-
-                // 1. If the torch is ON, it must be a torch
-                try constrain(&.{ d, a }, &.{ 0, 1 });
-
-                // 2. If the torch is ON, the block must NOT be powered (Weakly AND Strongly)
-                // This is two separate clauses: (d => !b) and (d => !c)
-                try constrain(&.{ d, b }, &.{ 0, 0 });
-                try constrain(&.{ d, c }, &.{ 0, 0 });
-
-                // 3. If it is a torch AND the block is NOT powered, the torch MUST be ON
-                // (!b AND !c AND a) => d  ---(rewritten for CNF)---> (b OR c OR !a OR d)
-                try constrain(&.{ b, c, a, d }, &.{ 1, 1, 0, 1 });
-            }
-        }
-
-        for (1..width) |x| {
-            for (0..height) |y| {
-                // No block to the left implies no right-facing torch
-                const a = is_right_torch[x][y];
-                const b = is_weakly_powered[state][x - 1][y];
-                const c = is_strongly_powered[state][x - 1][y];
-                const d = is_torch_on[state][x][y];
-
-                // 1. If the torch is ON, it must be a torch
-                try constrain(&.{ d, a }, &.{ 0, 1 });
-
-                // 2. If the torch is ON, the block must NOT be powered (Weakly AND Strongly)
-                // This is two separate clauses: (d => !b) and (d => !c)
-                try constrain(&.{ d, b }, &.{ 0, 0 });
-                try constrain(&.{ d, c }, &.{ 0, 0 });
-
-                // 3. If it is a torch AND the block is NOT powered, the torch MUST be ON
-                // (!b AND !c AND a) => d  ---(rewritten for CNF)---> (b OR c OR !a OR d)
-                try constrain(&.{ b, c, a, d }, &.{ 1, 1, 0, 1 });
-            }
-        }
-
         for (0..width) |x| {
-            for (0..height - 1) |y| {
-                // No block below implies no torch above
-                const a = is_standing_torch[x][y];
-                const b = is_weakly_powered[state][x][y + 1];
-                const c = is_strongly_powered[state][x][y + 1];
-                const d = is_torch_on[state][x][y];
+            for (0..height) |y| {
+                const b_powered = alloc(); // is the bottom block powered?
+                const b_weak = isWeaklyPoweredOffset(state, x, 0, y, 1);
+                const b_strong = isStronglyPoweredOffset(state, x, 0, y, 1);
+                try bitor(b_weak, b_strong, b_powered);
 
-                // 1. If the torch is ON, it must be a torch
-                try constrain(&.{ d, a }, &.{ 0, 1 });
+                const l_powered = alloc(); // is the left block powered?
+                const l_weak = isWeaklyPoweredOffset(state, x, -1, y, 0);
+                const l_strong = isStronglyPoweredOffset(state, x, -1, y, 0);
+                try bitor(l_weak, l_strong, l_powered);
 
-                // 2. If the torch is ON, the block must NOT be powered (Weakly AND Strongly)
-                // This is two separate clauses: (d => !b) and (d => !c)
-                try constrain(&.{ d, b }, &.{ 0, 0 });
-                try constrain(&.{ d, c }, &.{ 0, 0 });
+                const r_powered = alloc(); // is the right block powered?
+                const r_weak = isWeaklyPoweredOffset(state, x, 1, y, 0);
+                const r_strong = isStronglyPoweredOffset(state, x, 1, y, 0);
+                try bitor(r_weak, r_strong, r_powered);
 
-                // 3. If it is a torch AND the block is NOT powered, the torch MUST be ON
-                // (!b AND !c AND a) => d  ---(rewritten for CNF)---> (b OR c OR !a OR d)
-                try constrain(&.{ b, c, a, d }, &.{ 1, 1, 0, 1 });
+                const is_powered_s = alloc(); // a powered standing torch?
+                try bitand(is_standing_torch[x][y], b_powered, is_powered_s);
+                const is_powered_r = alloc(); // a powered right torch?
+                try bitand(is_right_torch[x][y], l_powered, is_powered_r);
+                const is_powered_l = alloc(); // a powered left torch?
+                try bitand(is_left_torch[x][y], r_powered, is_powered_l);
+
+                const is_pow_sr = alloc();
+                const torch_powered = alloc();
+                const is_unpowered = alloc();
+                try bitor(is_powered_s, is_powered_r, is_pow_sr);
+                try bitor(is_powered_l, is_pow_sr, torch_powered);
+                try bitnot(is_unpowered, torch_powered); // is this block a torch?
+                try bitand(is_unpowered, is_torch[x][y], is_torch_on[state][x][y]);
             }
         }
     }
@@ -707,25 +525,25 @@ fn enforceInputOutput() !void {
 
             switch (idx) {
                 0 => switch (state) { // output
-                    0b000 => try constrain(&.{a}, &.{0}),
-                    0b001 => try constrain(&.{a}, &.{1}),
-                    0b010 => try constrain(&.{a}, &.{1}),
-                    0b011 => try constrain(&.{a}, &.{0}),
-                    0b100 => try constrain(&.{a}, &.{1}),
-                    0b101 => try constrain(&.{a}, &.{0}),
-                    0b110 => try constrain(&.{a}, &.{0}),
-                    0b111 => try constrain(&.{a}, &.{1}),
+                    0b000 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b001 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b010 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b011 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b100 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b101 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b110 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b111 => try constrain(&.{a}, &.{0}), // &.{1}),
                     else => unreachable,
                 },
                 1 => switch (state) { // carry-out
-                    0b000 => try constrain(&.{a}, &.{0}),
-                    0b001 => try constrain(&.{a}, &.{0}),
-                    0b010 => try constrain(&.{a}, &.{0}),
-                    0b011 => try constrain(&.{a}, &.{1}),
-                    0b100 => try constrain(&.{a}, &.{0}),
-                    0b101 => try constrain(&.{a}, &.{1}),
-                    0b110 => try constrain(&.{a}, &.{1}),
-                    0b111 => try constrain(&.{a}, &.{1}),
+                    0b000 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b001 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b010 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b011 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b100 => try constrain(&.{a}, &.{0}), // &.{0}),
+                    0b101 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b110 => try constrain(&.{a}, &.{0}), // &.{1}),
+                    0b111 => try constrain(&.{a}, &.{0}), // &.{1}),
                     else => unreachable,
                 },
                 else => unreachable,
@@ -734,168 +552,160 @@ fn enforceInputOutput() !void {
     }
 }
 
-// If the block is an input block, ignore it.
-// If there is a torch on the left, and it is ON, signal strength 15
-// If there is a torch on the right, and it is ON, signal strength 15
-// If there is a torch above the dust, and it is ON, signal strength 15
-// If the block below is strongly powered, signal strength 15
-// Find the maximum nearby power:
-//     - this includes redstone dust to the left
-//     - this includes redstone dust to the right
-//     - If there is no block above,
-//         - this includes redstone dust to the top left
-//         - this includes redstone dust to the top right
-// Now that the maximum nearby power has been found, if it is equal to zero:
-//     - If so, the signal strength is equal to zero
-// If The maximum nearby power is not equal to zero:
-//     - The signal strength is one less than that value
+// If the block is redstone dust:
+//     If the block is NOT an input block:
+//         If powered by a torch above: 15
+//         If powered by a torch to the left: 15
+//         If powered by a torch to the right: 15
+//         If block below is strongly powered: 15
+//         If left block is strongly powered: 15
+//         If right block is strongly powered: 15
+//         Else:
+//             bl_power = AND(NOT left_block, bottom_left_signal)
+//             br_power = AND(NOT right_block, bottom_right_signal)
+//             tl_power = AND(NOT top_block, top_left_signal)
+//             tr_power = AND(NOT top_block, top_right_signal)
+//             cr_sig = MAX(tl_power, tr_power)
+//             lr_sig = MAX(left_signal, right_signal)
+//             max_signal = MAX(lr_sig, cr_sig)
+//             signal_strength = sat_dec(max_signal)
+//
 fn enforceRedstoneSignalDecay() !void {
     for (0..states) |state| {
         for (0..width) |x| {
             for (0..height) |y| {
-                // First, determine if it is directly powered:
+                const not_top = alloc(); // is there NOT a block above
+                try bitnot(not_top, isBlockOffset(x, 0, y, -1));
+
+                const not_left = alloc(); // is there NOT a block left
+                try bitnot(not_left, isBlockOffset(x, -1, y, 0));
+
+                const not_right = alloc(); // is there NOT a block right
+                try bitnot(not_right, isBlockOffset(x, 1, y, 0));
+
+                // signal strength *supplied* from the bottom right
+                const br_pow: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+
+                // signal strength of the dust at the bottom right
+                const br_sig = signalStrengthOffset(state, x, 1, y, 1);
+
+                try bitand(br_sig[0], not_right, br_pow[0]);
+                try bitand(br_sig[1], not_right, br_pow[1]);
+                try bitand(br_sig[2], not_right, br_pow[2]);
+                try bitand(br_sig[3], not_right, br_pow[3]);
+
+                // signal strength *supplied* from the bottom left
+                const bl_pow: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+
+                // signal strength of the dust at the bottom left
+                const bl_sig = signalStrengthOffset(state, x, -1, y, 1);
+
+                try bitand(bl_sig[0], not_left, bl_pow[0]);
+                try bitand(bl_sig[1], not_left, bl_pow[1]);
+                try bitand(bl_sig[2], not_left, bl_pow[2]);
+                try bitand(bl_sig[3], not_left, bl_pow[3]);
+
+                // signal strength *supplied* from the top left
+                const tl_pow: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+
+                // signal strength of the dust at the top left
+                const tl_sig = signalStrengthOffset(state, x, -1, y, -1);
+
+                try bitand(tl_sig[0], not_top, tl_pow[0]);
+                try bitand(tl_sig[1], not_top, tl_pow[1]);
+                try bitand(tl_sig[2], not_top, tl_pow[2]);
+                try bitand(tl_sig[3], not_top, tl_pow[3]);
+
+                // signal strength *supplied* from the top right
+                const tr_pow: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+
+                // signal strength of the dust at the top right
+                const tr_sig = signalStrengthOffset(state, x, 1, y, -1);
+
+                try bitand(tr_sig[0], not_top, tr_pow[0]);
+                try bitand(tr_sig[1], not_top, tr_pow[1]);
+                try bitand(tr_sig[2], not_top, tr_pow[2]);
+                try bitand(tr_sig[3], not_top, tr_pow[3]);
+
+                // signal strength *supplied* from the left
+                const l_pow = signalStrengthOffset(state, x, -1, y, 0);
+
+                // signal strength *supplied* from the right
+                const r_pow = signalStrengthOffset(state, x, 1, y, 0);
+
+                // signal strength *supplied* from the top corners
+                const tc_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try max4(tl_pow, tr_pow, tc_sig);
+
+                // signal strength *supplied* from the bottom corners
+                const bc_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try max4(bl_pow, br_pow, bc_sig);
+
+                // signal strength *supplied* from the corners
+                const cr_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try max4(tc_sig, bc_sig, cr_sig);
+
+                // signal strength *supplied* from the sides
+                const lr_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try max4(l_pow, r_pow, lr_sig);
+
+                // signal strength *supplied* from all positions
+                const su_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try max4(cr_sig, lr_sig, su_sig);
+
+                // new signal strength if not overridden
+                const or_sig: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try satdec4(su_sig, or_sig);
+
+                // powered by a torch above
+                const torch_u = isTorchOnOffset(state, x, 0, y, -1);
+                // powered by a torch to the left
+                const torch_l = isTorchOnOffset(state, x, -1, y, 0);
+                // powered by a torch to the right
+                const torch_r = isTorchOnOffset(state, x, 1, y, 0);
+                // strongly powered block to the left
+                const strong_l = isStronglyPoweredOffset(state, x, -1, y, 0);
+                // strongly powered block to the right
+                const strong_r = isStronglyPoweredOffset(state, x, 1, y, 0);
+                // strongly powered block below
+                const strong_d = isStronglyPoweredOffset(state, x, 0, y, 1);
+
+                // determine if the block is being directly powered
+                const strong_merge_a = alloc();
+                try bitor(torch_u, torch_l, strong_merge_a);
+                const strong_merge_b = alloc();
+                try bitor(torch_r, strong_l, strong_merge_b);
+                const strong_merge_c = alloc();
+                try bitor(strong_r, strong_d, strong_merge_c);
+                const strong_merge_d = alloc();
+                try bitor(strong_merge_a, strong_merge_b, strong_merge_d);
                 const direct_power = alloc();
+                try bitor(strong_merge_c, strong_merge_d, direct_power);
 
-                const tol = getIsTorchOn(state, @as(i64, @intCast(x)) - 1, y);
-                const tor = getIsTorchOn(state, x + 1, y);
-                const tou = getIsTorchOn(state, x, @as(i64, @intCast(y)) - 1);
-                const bst = getIsStronglyPowered(state, x, y + 1);
+                // power assuming block is redstone dust and
+                const power: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try bitor(direct_power, or_sig[0], power[0]);
+                try bitor(direct_power, or_sig[1], power[1]);
+                try bitor(direct_power, or_sig[2], power[2]);
+                try bitor(direct_power, or_sig[3], power[3]);
 
-                try constrain(&.{ direct_power, tol, tor, tou, bst }, &.{ 0, 1, 1, 1, 1 });
-                try constrain(&.{ direct_power, tol }, &.{ 1, 0 });
-                try constrain(&.{ direct_power, tor }, &.{ 1, 0 });
-                try constrain(&.{ direct_power, tou }, &.{ 1, 0 });
-                try constrain(&.{ direct_power, bst }, &.{ 1, 0 });
+                // constrainment based on whether it is an input block or dust
+                const not_input = alloc();
+                const not_inp_and_dust = alloc();
+                try bitnot(not_input, is_input[x][y]);
+                try bitand(not_input, is_dust[x][y], not_inp_and_dust);
 
-                // Second, determine if this is an input block:
-                const is_input_block = is_input[x][y];
+                // whether the signals are equal or not
+                const equal: [4]u64 = .{ alloc(), alloc(), alloc(), alloc() };
+                try bitimp(not_inp_and_dust, equal[0]);
+                try bitimp(not_inp_and_dust, equal[1]);
+                try bitimp(not_inp_and_dust, equal[2]);
+                try bitimp(not_inp_and_dust, equal[3]);
 
-                const block_above = getIsBlock(x, @as(i64, @intCast(y)) - 1);
-
-                const tl_power_0 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, @as(i64, @intCast(y)) - 1, 0);
-                const tl_power_1 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, @as(i64, @intCast(y)) - 1, 1);
-                const tl_power_2 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, @as(i64, @intCast(y)) - 1, 2);
-                const tl_power_3 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, @as(i64, @intCast(y)) - 1, 3);
-
-                const tr_power_0 = getSignalStrength(state, x + 1, @as(i64, @intCast(y)) - 1, 0);
-                const tr_power_1 = getSignalStrength(state, x + 1, @as(i64, @intCast(y)) - 1, 1);
-                const tr_power_2 = getSignalStrength(state, x + 1, @as(i64, @intCast(y)) - 1, 2);
-                const tr_power_3 = getSignalStrength(state, x + 1, @as(i64, @intCast(y)) - 1, 3);
-
-                const l_supplied_0 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, y, 0);
-                const l_supplied_1 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, y, 1);
-                const l_supplied_2 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, y, 2);
-                const l_supplied_3 = getSignalStrength(state, @as(i64, @intCast(x)) - 1, y, 3);
-
-                const r_supplied_0 = getSignalStrength(state, x + 1, y, 0);
-                const r_supplied_1 = getSignalStrength(state, x + 1, y, 1);
-                const r_supplied_2 = getSignalStrength(state, x + 1, y, 2);
-                const r_supplied_3 = getSignalStrength(state, x + 1, y, 3);
-
-                const tr_supplied_0 = alloc();
-                const tr_supplied_1 = alloc();
-                const tr_supplied_2 = alloc();
-                const tr_supplied_3 = alloc();
-
-                const tl_supplied_0 = alloc();
-                const tl_supplied_1 = alloc();
-                const tl_supplied_2 = alloc();
-                const tl_supplied_3 = alloc();
-
-                // depending on if a block is blocking us, don't allow the signal to come through
-
-                try constrain(&.{ tl_supplied_0, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tl_supplied_1, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tl_supplied_2, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tl_supplied_3, block_above }, &.{ 0, 0 });
-
-                try constrain(&.{ tr_supplied_0, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tr_supplied_1, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tr_supplied_2, block_above }, &.{ 0, 0 });
-                try constrain(&.{ tr_supplied_3, block_above }, &.{ 0, 0 });
-
-                try constrain(&.{ tl_supplied_0, tl_power_0 }, &.{ 0, 1 });
-                try constrain(&.{ tl_supplied_1, tl_power_1 }, &.{ 0, 1 });
-                try constrain(&.{ tl_supplied_2, tl_power_2 }, &.{ 0, 1 });
-                try constrain(&.{ tl_supplied_3, tl_power_3 }, &.{ 0, 1 });
-
-                try constrain(&.{ tr_supplied_0, tr_power_0 }, &.{ 0, 1 });
-                try constrain(&.{ tr_supplied_1, tr_power_1 }, &.{ 0, 1 });
-                try constrain(&.{ tr_supplied_2, tr_power_2 }, &.{ 0, 1 });
-                try constrain(&.{ tr_supplied_3, tr_power_3 }, &.{ 0, 1 });
-
-                try constrain(&.{ tl_supplied_0, block_above, tl_power_0 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tl_supplied_1, block_above, tl_power_1 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tl_supplied_2, block_above, tl_power_2 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tl_supplied_3, block_above, tl_power_3 }, &.{ 1, 1, 0 });
-
-                try constrain(&.{ tr_supplied_0, block_above, tr_power_0 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tr_supplied_1, block_above, tr_power_1 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tr_supplied_2, block_above, tr_power_2 }, &.{ 1, 1, 0 });
-                try constrain(&.{ tr_supplied_3, block_above, tr_power_3 }, &.{ 1, 1, 0 });
-
-                // get the greater signal strength of all four signals:
-                const max_supplied = try lexicalGreater(
-                    try lexicalGreater(
-                        .{ tl_supplied_0, tl_supplied_1, tl_supplied_2, tl_supplied_3 },
-                        .{ l_supplied_0, l_supplied_1, l_supplied_2, l_supplied_3 },
-                    ),
-                    try lexicalGreater(
-                        .{ tr_supplied_0, tr_supplied_1, tr_supplied_2, tr_supplied_3 },
-                        .{ r_supplied_0, r_supplied_1, r_supplied_2, r_supplied_3 },
-                    ),
-                );
-
-                // if is_input_block:
-                //     (no constraint on signal)
-                // else:
-                //     if direct_power:
-                //         signal = 15
-                //     else if sup_not_zero:
-                //         signal = supplied_dec
-                //     else:
-                //         signal = 0
-
-                const sup_not_zero = alloc();
-                // sup_not_zero is true if any bit is set
-                try constrain(&.{ sup_not_zero, max_supplied[0], max_supplied[1], max_supplied[2], max_supplied[3] }, &.{ 1, 0, 0, 0, 0 });
-                // if any bit is set, sup_not_zero must be true
-                try constrain(&.{ sup_not_zero, max_supplied[0] }, &.{ 1, 0 });
-                try constrain(&.{ sup_not_zero, max_supplied[1] }, &.{ 1, 0 });
-                try constrain(&.{ sup_not_zero, max_supplied[2] }, &.{ 1, 0 });
-                try constrain(&.{ sup_not_zero, max_supplied[3] }, &.{ 1, 0 });
-
-                const supplied_dec = try decrement4(max_supplied);
-
-                const signal_0 = signal_strength[state][x][y][0];
-                const signal_1 = signal_strength[state][x][y][1];
-                const signal_2 = signal_strength[state][x][y][2];
-                const signal_3 = signal_strength[state][x][y][3];
-
-                // if NOT input AND direct_power, then signal = 15
-                try constrain(&.{ is_input_block, direct_power, signal_0 }, &.{ 1, 0, 1 });
-                try constrain(&.{ is_input_block, direct_power, signal_1 }, &.{ 1, 0, 1 });
-                try constrain(&.{ is_input_block, direct_power, signal_2 }, &.{ 1, 0, 1 });
-                try constrain(&.{ is_input_block, direct_power, signal_3 }, &.{ 1, 0, 1 });
-
-                // if NOT input AND NOT direct_power AND sup_not_zero, then signal = supplied_dec
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_0, supplied_dec[0] }, &.{ 1, 1, 0, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_0, supplied_dec[0] }, &.{ 1, 1, 0, 0, 1 });
-
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_1, supplied_dec[1] }, &.{ 1, 1, 0, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_1, supplied_dec[1] }, &.{ 1, 1, 0, 0, 1 });
-
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_2, supplied_dec[2] }, &.{ 1, 1, 0, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_2, supplied_dec[2] }, &.{ 1, 1, 0, 0, 1 });
-
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_3, supplied_dec[3] }, &.{ 1, 1, 0, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_3, supplied_dec[3] }, &.{ 1, 1, 0, 0, 1 });
-
-                // if NOT input AND NOT direct_power AND NOT sup_not_zero, then signal = 0
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_0 }, &.{ 1, 1, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_1 }, &.{ 1, 1, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_2 }, &.{ 1, 1, 1, 0 });
-                try constrain(&.{ is_input_block, direct_power, sup_not_zero, signal_3 }, &.{ 1, 1, 1, 0 });
+                try bitxnor(signal_strength[state][x][y][0], power[0], equal[0]);
+                try bitxnor(signal_strength[state][x][y][1], power[1], equal[1]);
+                try bitxnor(signal_strength[state][x][y][2], power[2], equal[2]);
+                try bitxnor(signal_strength[state][x][y][3], power[3], equal[3]);
             }
         }
     }
@@ -963,8 +773,8 @@ fn biteql(lhs: u64, rhs: u64) !void {
 }
 
 fn bitop1(a: u64, b: u64, t: [2]u1) !void {
-    try constrain(&.{ a, b }, &.{ 0, ~t[0] });
-    try constrain(&.{ a, b }, &.{ 1, ~t[1] });
+    try constrain(&.{ a, b }, &.{ 1, t[0] });
+    try constrain(&.{ a, b }, &.{ 0, t[1] });
 }
 
 // -------------------------------------------------- DOUBLE BITWISE OPERATIONS
@@ -1000,10 +810,10 @@ fn bitxor(lhs: u64, rhs: u64, result: u64) !void {
 }
 
 fn bitop2(a: u64, b: u64, c: u64, t: [4]u1) !void {
-    try constrain(&.{ a, b, c }, &.{ 0, 0, ~t[0] });
-    try constrain(&.{ a, b, c }, &.{ 0, 1, ~t[1] });
-    try constrain(&.{ a, b, c }, &.{ 1, 0, ~t[2] });
-    try constrain(&.{ a, b, c }, &.{ 1, 1, ~t[3] });
+    try constrain(&.{ a, b, c }, &.{ 1, 1, t[0] });
+    try constrain(&.{ a, b, c }, &.{ 1, 0, t[1] });
+    try constrain(&.{ a, b, c }, &.{ 0, 1, t[2] });
+    try constrain(&.{ a, b, c }, &.{ 0, 0, t[3] });
 }
 
 // -------------------------------------------------- TRIPLE BITWISE OPERATIONS
@@ -1014,14 +824,14 @@ fn bitsel(condition: u64, lhs: u64, rhs: u64, result: u64) !void {
 }
 
 fn bitop3(a: u64, b: u64, c: u64, d: u64, t: [8]u1) !void {
-    try constrain(&.{ a, b, c, d }, &.{ 0, 0, 0, ~t[0] });
-    try constrain(&.{ a, b, c, d }, &.{ 0, 0, 1, ~t[1] });
-    try constrain(&.{ a, b, c, d }, &.{ 0, 1, 0, ~t[2] });
-    try constrain(&.{ a, b, c, d }, &.{ 0, 1, 1, ~t[3] });
-    try constrain(&.{ a, b, c, d }, &.{ 1, 0, 0, ~t[4] });
-    try constrain(&.{ a, b, c, d }, &.{ 1, 0, 1, ~t[5] });
-    try constrain(&.{ a, b, c, d }, &.{ 1, 1, 0, ~t[6] });
-    try constrain(&.{ a, b, c, d }, &.{ 1, 1, 1, ~t[7] });
+    try constrain(&.{ a, b, c, d }, &.{ 1, 1, 1, t[0] });
+    try constrain(&.{ a, b, c, d }, &.{ 1, 1, 0, t[1] });
+    try constrain(&.{ a, b, c, d }, &.{ 1, 0, 1, t[2] });
+    try constrain(&.{ a, b, c, d }, &.{ 1, 0, 0, t[3] });
+    try constrain(&.{ a, b, c, d }, &.{ 0, 1, 1, t[4] });
+    try constrain(&.{ a, b, c, d }, &.{ 0, 1, 0, t[5] });
+    try constrain(&.{ a, b, c, d }, &.{ 0, 0, 1, t[6] });
+    try constrain(&.{ a, b, c, d }, &.{ 0, 0, 0, t[7] });
 }
 
 // ----------------------------------------------------------------- ARITHMETIC
@@ -1074,6 +884,20 @@ fn max4(lhs: [4]u64, rhs: [4]u64, result: [4]u64) !void {
     try bitsel(lt, rhs[1], lhs[1], result[1]);
     try bitsel(lt, rhs[2], lhs[2], result[2]);
     try bitsel(lt, rhs[3], lhs[3], result[3]);
+}
+
+/// check equivalence to zero for 4 bits
+fn iszero4(num: [4]u64, is_zero: u64) !void {
+    try constrain( // the number is zero, or a bit is true
+        &.{ is_zero, num[0], num[1], num[2], num[3] },
+        &.{ 1, 1, 1, 1, 1 },
+    );
+
+    // each bit is either false, or the number isn't zero
+    try constrain(&.{ is_zero, num[0] }, &.{ 0, 0 });
+    try constrain(&.{ is_zero, num[1] }, &.{ 0, 0 });
+    try constrain(&.{ is_zero, num[2] }, &.{ 0, 0 });
+    try constrain(&.{ is_zero, num[3] }, &.{ 0, 0 });
 }
 
 // ------------------------------------------------------- ENCODING CONSTRAINTS
