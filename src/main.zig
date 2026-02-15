@@ -38,27 +38,55 @@ pub fn main(init: std.process.Init.Minimal) !void {
     , .{process_name});
 }
 
-/// simulating every possible state in parallel
-const states = 1 << in_pos.len;
+/// number of inputs to the circuit
+const inputs = 3;
+/// number of outputs to the circuit
+const outputs = 2;
 /// length of the redstone build in number of blocks
 const width = 10;
 /// height of the redstone build in number of blocks
-const height = 10;
-/// complexity of the circuit (number of segment IDs)
-const id_count = 16;
+const height = 8;
+/// maximum number of torches the circuit can have
+const max_torch: ?u64 = null;
+/// whether or not to allow left facing torches
+const allow_left_torch = true;
+/// whether or not to allow standing torches
+const allow_standing_torch = true;
+/// whether or not to allow right facing torches
+const allow_right_torch = true;
+/// complexity of the circuit (number of IDs - 1)
+const complexity = 23;
 /// maximum power that a redstone line can have
 const max_power = 15;
+
+const TruthRow = struct { [inputs]u1, u1 };
+const truth: [outputs][]const TruthRow = .{
+    &.{ // OUTPUT 1 (the carry)
+        .{ .{ 0, 0, 0 }, 0 },
+        .{ .{ 0, 0, 1 }, 0 },
+        .{ .{ 0, 1, 0 }, 0 },
+        .{ .{ 0, 1, 1 }, 1 },
+        .{ .{ 1, 0, 0 }, 0 },
+        .{ .{ 1, 0, 1 }, 1 },
+        .{ .{ 1, 1, 0 }, 1 },
+        .{ .{ 1, 1, 1 }, 1 },
+    },
+    &.{ // OUTPUT 2 (the sum)
+        .{ .{ 0, 0, 0 }, 0 },
+        .{ .{ 0, 0, 1 }, 1 },
+        .{ .{ 0, 1, 0 }, 1 },
+        .{ .{ 0, 1, 1 }, 0 },
+        .{ .{ 1, 0, 0 }, 1 },
+        .{ .{ 1, 0, 1 }, 0 },
+        .{ .{ 1, 1, 0 }, 0 },
+        .{ .{ 1, 1, 1 }, 1 },
+    },
+};
+
 /// area of the redstone build in number of blocks
 const area = width * height;
-
-const in_pos: []const [2]usize = &.{
-    .{ 0, 3 },
-    .{ 0, 5 },
-};
-
-const out_pos: []const [2]usize = &.{
-    .{ 9, 4 },
-};
+/// simulating every possible state in parallel
+const states = 1 << inputs;
 
 /// "air" is a lack of dust, torch, or block
 var is_air: Bits = undefined; // area number of bits
@@ -74,6 +102,11 @@ var is_input: Bits = undefined; // area number of bits
 /// "outputs" are redstone dust
 var is_output: Bits = undefined; // area number of bits
 
+/// select the specific input that maps to that block
+var input_map: [inputs]Bits = undefined; // area number of bits
+/// select the specific output that maps to that block
+var output_map: [outputs]Bits = undefined; // area number of bits
+
 /// standing torches are connected to the block below them
 var is_standing_torch: Bits = undefined; // area number of bits
 /// left torches are connected to the block on their right
@@ -82,7 +115,7 @@ var is_left_torch: Bits = undefined; // area number of bits
 var is_right_torch: Bits = undefined; // area number of bits
 
 /// segment IDs to prevent state cycles - preventing latches - unary
-var segment_id: [area]Bits = undefined; // id_count number of bits
+var segment_id: [area]Bits = undefined; // complexity number of bits
 
 /// torch state, whether they are on or off
 var is_torch_on: [states]Bits = undefined; // area number of bits
@@ -125,13 +158,17 @@ fn initializeGlobals(cnf: *Cnf) !void {
     is_input = cnf.alloc(area);
     is_output = cnf.alloc(area);
 
+    for (&input_map) |*input|
+        input.* = cnf.alloc(area);
+    for (&output_map) |*output|
+        output.* = cnf.alloc(area);
+
     is_standing_torch = cnf.alloc(area);
     is_left_torch = cnf.alloc(area);
     is_right_torch = cnf.alloc(area);
 
-    for (0..area) |block| {
-        segment_id[block] = cnf.alloc(id_count);
-    }
+    for (&segment_id) |*segment|
+        segment.* = cnf.alloc(complexity);
 
     for (0..states) |state| {
         is_torch_on[state] = cnf.alloc(area);
@@ -446,40 +483,146 @@ fn enforceTorchesOnBlocks(cnf: *Cnf) !void {
     }
 }
 
-// Constrain inputs and outputs based on their position
-fn enforceInputOutputPositions(cnf: *Cnf) !void {
-    // Blocks aren't inputs if not in the input list
-    for (0..height) |y| {
-        inner: for (0..width) |x| {
-            for (in_pos) |i|
-                if (i[0] == x and i[1] == y)
-                    continue :inner;
-            const pos = x + y * width;
+// Allow inputs to only be at the front of the circuit
+fn enforceInputOutputLocation(cnf: *Cnf) !void {
+    // Inputs can only be in the first column
+    for (0..area) |pos|
+        if (pos % width != 0)
             try cnf.bitfalse(is_input.at(pos));
-        }
-    }
 
-    // Blocks *are* inputs if in the input list
-    for (in_pos) |i| {
-        const pos = i[0] + i[1] * width;
-        try cnf.bittrue(is_input.at(pos));
-    }
-
-    // Blocks aren't outputs if not in the output list
-    for (0..height) |y| {
-        inner: for (0..width) |x| {
-            for (out_pos) |o|
-                if (o[0] == x and o[1] == y)
-                    continue :inner;
-            const pos = x + y * width;
+    // Outputs can only be in the last column
+    for (0..area) |pos|
+        if (pos % width != width - 1)
             try cnf.bitfalse(is_output.at(pos));
+}
+
+// forces specific inputs and outputs to be a general input or output
+fn enforceInputOutputMapImplication(cnf: *Cnf) !void {
+    // Specific inputs are a general input
+    for (0..area) |pos|
+        for (input_map) |input|
+            try cnf.bitimp(input.at(pos), is_input.at(pos));
+
+    for (0..area) |pos| {
+        // Either the current block is not an input
+        try cnf.clausePart(is_input.at(pos), 0);
+        for (input_map) |input|
+            // Or there is a block that is a specific input
+            try cnf.clausePart(input.at(pos), 1);
+        // general inputs require at least one specific input
+        try cnf.clauseEnd();
+    }
+
+    // Specific outputs are a general output
+    for (0..area) |pos|
+        for (output_map) |output|
+            try cnf.bitimp(output.at(pos), is_output.at(pos));
+
+    for (0..area) |pos| {
+        // Either the current block is not an output
+        try cnf.clausePart(is_output.at(pos), 0);
+        for (output_map) |output|
+            // Or there is a block that is a specific output
+            try cnf.clausePart(output.at(pos), 1);
+        // general outputs require at least one specific output
+        try cnf.clauseEnd();
+    }
+}
+
+// prevent specific inputs and outputs from overlapping each other
+fn constrainOverlappingInputsOutputs(cnf: *Cnf) !void {
+    for (0..area) |pos| {
+        // No two specific inputs map to the same block
+        for (0..inputs) |lhs| for (0..lhs) |rhs| try cnf.clause(
+            &.{ input_map[lhs].at(pos), input_map[rhs].at(pos) },
+            &.{ 0, 0 },
+        );
+
+        // No two specific outputs map to the same block
+        for (0..outputs) |lhs| for (0..lhs) |rhs| try cnf.clause(
+            &.{ output_map[lhs].at(pos), output_map[rhs].at(pos) },
+            &.{ 0, 0 },
+        );
+    }
+}
+
+// forces the number of inputs and outputs to be one
+fn enforceInputOutputCardinality(cnf: *Cnf) !void {
+    for (0..area) |lhs| {
+        for (0..lhs) |rhs| {
+            // No two blocks map to the same input
+            for (input_map) |input| try cnf.clause(
+                &.{ input.at(lhs), input.at(rhs) },
+                &.{ 0, 0 },
+            );
+
+            // No two blocks map to the same output
+            for (output_map) |output| try cnf.clause(
+                &.{ output.at(lhs), output.at(rhs) },
+                &.{ 0, 0 },
+            );
         }
     }
 
-    // Blocks *are* outputs if in the output list
-    for (out_pos) |o| {
-        const pos = o[0] + o[1] * width;
-        try cnf.bittrue(is_output.at(pos));
+    for (input_map) |input| {
+        // At least one block is each input
+        for (0..area) |pos|
+            try cnf.clausePart(input.at(pos), 1);
+        try cnf.clauseEnd();
+    }
+
+    for (output_map) |output| {
+        // At least one block is each output
+        for (0..area) |pos|
+            try cnf.clausePart(output.at(pos), 1);
+        try cnf.clauseEnd();
+    }
+}
+
+// constrains the value of specific input blocks based on the state
+fn constrainSpecificInputDustValue(cnf: *Cnf) !void {
+    for (0..states) |state| {
+        for (input_map, 0..) |input, idx| {
+            for (0..area) |pos| {
+                const top = max_power - 1;
+                const inp = input.at(pos);
+                const sig = signal_strength[state][pos];
+                switch (@as(u1, @truncate(state >> @intCast(idx)))) {
+                    // On specific 0, input IMPLIES zero signal strength
+                    0 => try cnf.clause(&.{ inp, sig.at(0) }, &.{ 0, 0 }),
+                    // On specific 1, input IMPLIES max signal strength
+                    1 => try cnf.clause(&.{ inp, sig.at(top) }, &.{ 0, 1 }),
+                }
+            }
+        }
+    }
+}
+
+// constrains the value of specific output blocks based on the truth table
+fn constrainSpecificOutputDustValue(cnf: *Cnf) !void {
+    for (0..states) |state| {
+        for (output_map, 0..) |output, idx| {
+            for (0..area) |pos| {
+                const out = output.at(pos);
+                const pow = is_dust_powered[state].at(pos);
+                for (truth[idx]) |row| {
+                    // Compute which row we are on
+                    var row_number: u64 = 0;
+                    for (row[0], 0..) |bit, off| {
+                        const shift: u6 = @intCast(inputs - 1 - off);
+                        row_number |= @as(u64, bit) << shift;
+                    }
+
+                    // Constrain the output if we are on this row
+                    if (state == row_number) switch (row[1]) {
+                        // On specific 0, out IMPLIES unpowered
+                        0 => try cnf.clause(&.{ out, pow }, &.{ 0, 0 }),
+                        // On specific 1, out IMPLIES powered
+                        1 => try cnf.clause(&.{ out, pow }, &.{ 0, 1 }),
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -644,45 +787,6 @@ fn enforceTorchPower(cnf: *Cnf) !void {
             } else {
                 // This case isn't possible because we can't have unsupported
                 // torches, so we don't need to say s_torch implies torch_on.
-            }
-        }
-    }
-}
-
-// forces inputs and outputs to be certain values
-fn enforceInputOutput(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (in_pos, 0..) |pos, idx| {
-            const top = max_power - 1;
-            const flat_pos = pos[0] + pos[1] * width;
-            const signal = signal_strength[state][flat_pos];
-            // The top unary bit of our input signal strength is
-            // equal to the truth table input value for the state.
-            // In other words, fully power the input state on '1'.
-            switch (@as(u1, @truncate(state >> @intCast(idx)))) {
-                // On an input of 0, the signal strength is zero
-                0 => try cnf.clause(&.{signal.at(0)}, &.{0}),
-                // On an input of 1, the signal strength is maximized
-                1 => try cnf.clause(&.{signal.at(top)}, &.{1}),
-            }
-        }
-
-        for (out_pos, 0..) |pos, idx| {
-            const flat_pos = pos[0] + pos[1] * width;
-            const pow = is_dust_powered[state].at(flat_pos);
-
-            switch (idx) {
-                0 => switch (state) {
-                    // For each input state, the output
-                    // is either powered or not powered.
-                    0b00 => try cnf.clause(&.{pow}, &.{0}),
-                    0b01 => try cnf.clause(&.{pow}, &.{1}),
-                    0b10 => try cnf.clause(&.{pow}, &.{1}),
-                    0b11 => try cnf.clause(&.{pow}, &.{0}),
-                    else => unreachable,
-                },
-                // place other outputs down here
-                else => unreachable,
             }
         }
     }
@@ -1218,6 +1322,41 @@ fn restrictDustGroupId(cnf: *Cnf) !void {
     }
 }
 
+// remove unnecessary torches and dust
+fn restrictUnchangingTorchesAndDust(cnf: *Cnf) !void {
+    for (0..area) |pos| {
+        inline for (&.{
+            &.{ is_torch_on, is_torch },
+            &.{ is_dust_powered, is_dust },
+        }) |stateful| {
+            inline for (&.{ 0, 1 }) |power| {
+                for (0..states) |state|
+                    try cnf.clausePart(stateful[0][state].at(pos), power);
+                try cnf.clausePart(stateful[1].at(pos), 0);
+                try cnf.clauseEnd();
+            }
+        }
+    }
+}
+
+// constrain the number of torches
+fn constrainTorchCount(cnf: *Cnf) !void {
+    if (max_torch) |count| {
+        const torch_card = try cnf.unaryTotalize(is_torch);
+        try cnf.unaryConstrainLEVal(torch_card, count);
+    }
+}
+
+// constrain torch type
+fn constrainTorchType(cnf: *Cnf) !void {
+    if (!allow_standing_torch) for (0..area) |pos|
+        try cnf.bitfalse(is_standing_torch.at(pos));
+    if (!allow_left_torch) for (0..area) |pos|
+        try cnf.bitfalse(is_left_torch.at(pos));
+    if (!allow_right_torch) for (0..area) |pos|
+        try cnf.bitfalse(is_right_torch.at(pos));
+}
+
 fn encodeMain(io: Io, _: Allocator) !void {
     const cwd = Io.Dir.cwd();
 
@@ -1242,8 +1381,8 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try enforceSignalDecay(&cnf);
     std.debug.print("enforceDustOnBlock...\n", .{});
     try enforceDustOnBlock(&cnf);
-    std.debug.print("enforceInputOutput...\n", .{});
-    try enforceInputOutput(&cnf);
+    std.debug.print("constrainTorchType...\n", .{});
+    try constrainTorchType(&cnf);
     std.debug.print("enforceGeneralPower...\n", .{});
     try enforceGeneralPower(&cnf);
     std.debug.print("restrictBlockDustId...\n", .{});
@@ -1256,6 +1395,8 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try enforceWeakPowering(&cnf);
     std.debug.print("restrictDustTorchId...\n", .{});
     try restrictDustTorchId(&cnf);
+    std.debug.print("constrainTorchCount...\n", .{});
+    try constrainTorchCount(&cnf);
     std.debug.print("restrictBlockTorchId...\n", .{});
     try restrictBlockTorchId(&cnf);
     std.debug.print("restrictTorchBlockId...\n", .{});
@@ -1278,14 +1419,26 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try enforceTorchesOnBlocks(&cnf);
     std.debug.print("constrainSupplyableSignal...\n", .{});
     try constrainSupplyableSignal(&cnf);
+    std.debug.print("enforceInputOutputLocation...\n", .{});
+    try enforceInputOutputLocation(&cnf);
     std.debug.print("enforceDustSignalExistence...\n", .{});
     try enforceDustSignalExistence(&cnf);
     std.debug.print("constrainDecayableStrength...\n", .{});
     try constrainDecayableStrength(&cnf);
-    std.debug.print("enforceInputOutputPositions...\n", .{});
-    try enforceInputOutputPositions(&cnf);
     std.debug.print("constrainMaxNeighborStrength...\n", .{});
     try constrainMaxNeighborStrength(&cnf);
+    std.debug.print("enforceInputOutputCardinality...\n", .{});
+    try enforceInputOutputCardinality(&cnf);
+    std.debug.print("constrainSpecificInputDustValue...\n", .{});
+    try constrainSpecificInputDustValue(&cnf);
+    std.debug.print("constrainSpecificOutputDustValue...\n", .{});
+    try constrainSpecificOutputDustValue(&cnf);
+    std.debug.print("restrictUnchangingTorchesAndDust...\n", .{});
+    try restrictUnchangingTorchesAndDust(&cnf);
+    std.debug.print("enforceInputOutputMapImplication...\n", .{});
+    try enforceInputOutputMapImplication(&cnf);
+    std.debug.print("constrainOverlappingInputsOutputs...\n", .{});
+    try constrainOverlappingInputsOutputs(&cnf);
     std.debug.print("Saving...\n", .{});
 
     // Open "real_file" (real output) and create buffered writer "real"

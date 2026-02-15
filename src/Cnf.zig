@@ -447,16 +447,24 @@ pub fn unaryConstrainGEVal(self: *@This(), bits: Bits, val: u64) !void {
 /// number is valid unary. (eg. 11111111111100000000)
 pub fn unaryConstrainLTVal(self: *@This(), bits: Bits, val: u64) !void {
     assert(val != 0); // not possible to be less than zero
-    if (val == 0 or val >= bits.len) return; // always the case
+    if (val >= bits.len) return; // always the case
     try self.bitfalse(bits.at(val - 1));
+}
+
+/// Constrain a unary number to be less than or equal
+/// to some known constant. Assumes that the input unary
+/// number is valid unary. (eg. 11111111111100000000)
+pub fn unaryConstrainLEVal(self: *@This(), bits: Bits, val: u64) !void {
+    if (val > bits.len) return; // always the case
+    try self.bitfalse(bits.at(val));
 }
 
 /// Constrains a unary number to be equal in value
 /// to some known constant. Assumes that the input
 /// is indeed valid unary. (eg. 11111111111110000)
 pub fn unaryConstrainEQVal(self: *@This(), bits: Bits, val: u64) !void {
-    try self.unaryGEVal(bits, val + 0); // X >= val
-    try self.unaryLTVal(bits, val + 1); // X <= val
+    try self.unaryConstrainGEVal(bits, val + 0); // X >= val
+    try self.unaryConstrainLTVal(bits, val + 1); // X <= val
 }
 
 /// Constrain some number of bits to be a valid
