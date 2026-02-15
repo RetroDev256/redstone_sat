@@ -9,7 +9,7 @@ while ! pgrep -x kissat >/dev/null; do
 done
 
 BEST_CORE="8,11"
-PID=1296878 #"$(pgrep -x kissat)"
+PID="$(pgrep -x kissat)"
 
 echo 0 > sudo /proc/sys/kernel/randomize_va_space
 sudo cpupower frequency-set -g performance
