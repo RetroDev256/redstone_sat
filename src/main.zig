@@ -8,7 +8,7 @@ const Bits = Cnf.Bits;
 // ----------------------------------------------------------------------- MAIN
 
 // OLD: 125.77 seconds, 61480960 bytes
-// NEW:
+// NEW: 171.03 seconds, 77377536 bytes
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
@@ -45,7 +45,7 @@ const width = 10;
 /// height of the redstone build in number of blocks
 const height = 10;
 /// complexity of the circuit (number of segment IDs)
-const id_count = 64;
+const id_count = 16;
 /// maximum power that a redstone line can have
 const max_power = 15;
 /// area of the redstone build in number of blocks
@@ -186,8 +186,6 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
     var block_is_right_torch: [area]?u1 = @splat(null);
     var block_is_standing_torch: [area]?u1 = @splat(null);
 
-    var block_is_powered: [area]u3 = @splat(0);
-
     while (true) {
         allocating.clearRetainingCapacity();
         const stream = stdin.streamDelimiter(line_store, '\n');
@@ -220,46 +218,6 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
                     }
                 }
             }
-
-            // max_signal_strength[state][pos].at(0) // seems to be correct
-            // decay_strength[state][pos].at(0) // seems to be correct
-            // supply_top_right[state][pos].at(0) // seems to be correct
-            // is_strongly_powered[state].at(pos) // seems to be correct
-            // can_propagate[state].at(pos) // seems to be correct
-            // is_directly_powered[state].at(pos) // seems to be correct
-            // can_decay[state].at(pos) // seems to be correct
-            // supply_bottom_left[state][pos].at(0) // seems to be correct
-
-            // is_torch_on[state].at(pos) // either redstone doesn't power the block below,
-            // or it is the case that redstone signals don't propagate, or it is the case that right
-            // torches can simply choose to be on...
-
-            // is_weakly_powered[state].at(pos) // propagating FROM the top left TO the bottom right
-            // doesn't seem to work? Either that or dust doesn't need to weakly power blocks below them.
-
-            // is_powered[state].at(pos) // still showing that some dust does not connect
-            // (diagonal down right or diagnal up left)
-
-            // is_dust_powered[state].at(pos) // perhaps the most interesting - it shows that
-            // propagations to the left and right AND diagonal downard right don't work?
-
-            // signal_strength[state][pos].at(0) // shows that signal strengths don't match up
-            // across the diagonal up-left or down-right angles, as if signal is unconstrained
-
-            // supply_top_left[state][pos].at(0) // shows that *some* signal is being supplied
-            // from the top left... but it isn't nearly how much it should be.
-
-            // supply_bottom_right[state][pos].at(0) // shows that *some* signal is being supplied
-            // from the bottom right... but it isn't nearly how much it should be.
-
-            for (0..states) |state| {
-                for (0..area) |pos| {
-                    if (decoded == is_dust_powered[state].at(pos)) {
-                        block_is_powered[pos] += value;
-                        continue :outer;
-                    }
-                }
-            }
         }
     }
 
@@ -287,10 +245,6 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
                             break;
                         }
                     }
-
-                    // if (sub_row == 1 and sub_col == 1) {
-                    //     byte = @as(u8, '0') + block_is_powered[pos];
-                    // }
 
                     try stdout.writeByte(byte);
                 }
@@ -770,25 +724,6 @@ fn enforceCanDecay(cnf: *Cnf) !void {
     }
 }
 
-// SUP = SIG AND NOT BLOCK AND DUST
-
-// SIG BLK DST SUP
-//   0   0   0   0
-//   0   0   1   0
-//   0   1   0   0
-//   0   1   1   0
-
-//   1   1   0   0
-//   1   1   1   0
-
-//   1   0   0   0
-//   1   0   1   1
-
-// SIG IMPLIES NOT SUP
-// BLK IMPLIES NOT SUP
-// SUP IMPLIES DST
-// (SIG AND NOT BLK AND DST) IMPLIES SUP
-
 // Set the supplyable signal strengths of nearby blocks depending on the
 // signal strength of nearby blocks, factoring in impediments like blocks.
 fn constrainSupplyableSignal(cnf: *Cnf) !void {
@@ -816,26 +751,17 @@ fn constrainSupplyableSignal(cnf: *Cnf) !void {
                     // SUP = SIG AND NOT BLOCK AND DUST
                     const sup = tl_sup.at(off);
                     const sig = tl_sig.at(off);
-                    const block = t_block_maybe.?;
-                    const dust = is_dust.at(pos);
+                    const blk = t_block_maybe.?;
+                    const dst = is_dust.at(pos);
 
-                    const temp_a = cnf.alloc(1).idx; // NOT BLOCK
-                    try cnf.bitnot(block, temp_a);
-                    const temp_b = cnf.alloc(1).idx; // SIG AND NOT BLOCK
-                    try cnf.bitand(sig, temp_a, temp_b);
-                    try cnf.bitand(dust, temp_b, sup); // SIG AND NOT BLOCK AND DUST
-
-                    // // If the supply bit is set, it implies dust
-                    // try cnf.bitimp(sup, dust);
-                    // // If the supply bit is set, it implies the signal bit
-                    // try cnf.bitimp(sup, sig);
-                    // // There is either no supply bit, or no block
-                    // try cnf.clause(&.{ sup, block }, &.{ 0, 0 });
-                    // // Supply requires dust, signal, and no block
-                    // try cnf.clause(
-                    //     &.{ sup, block, sig, dust },
-                    //     &.{ 0, 0, 1, 1 },
-                    // );
+                    // supply implies dust
+                    try cnf.bitimp(sup, dst);
+                    // supply implies signal strength
+                    try cnf.bitimp(sup, sig);
+                    // blocked connection implies no supply
+                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
+                    // signal and no block and dust imply supply
+                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
                 } else {
                     // Supplyable signal strength from the top left is zero
                     try cnf.bitfalse(tl_sup.at(off));
@@ -845,26 +771,17 @@ fn constrainSupplyableSignal(cnf: *Cnf) !void {
                     // SUP = SIG AND NOT BLOCK AND DUST
                     const sup = bl_sup.at(off);
                     const sig = bl_sig.at(off);
-                    const block = l_block_maybe.?;
-                    const dust = is_dust.at(pos);
+                    const blk = l_block_maybe.?;
+                    const dst = is_dust.at(pos);
 
-                    // // If the supply bit is set, it implies dust
-                    // try cnf.bitimp(sup, dust);
-                    // // If the supply bit is set, it implies the signal bit
-                    // try cnf.bitimp(sup, sig);
-                    // // There is either no supply bit, or no block
-                    // try cnf.clause(&.{ sup, block }, &.{ 0, 0 });
-                    // // Supply requires dust, signal, and no block
-                    // try cnf.clause(
-                    //     &.{ sup, block, sig, dust },
-                    //     &.{ 0, 0, 1, 1 },
-                    // );
-
-                    const temp_a = cnf.alloc(1).idx; // NOT BLOCK
-                    try cnf.bitnot(block, temp_a);
-                    const temp_b = cnf.alloc(1).idx; // SIG AND NOT BLOCK
-                    try cnf.bitand(sig, temp_a, temp_b);
-                    try cnf.bitand(dust, temp_b, sup); // SIG AND NOT BLOCK AND DUST
+                    // supply implies dust
+                    try cnf.bitimp(sup, dst);
+                    // supply implies signal strength
+                    try cnf.bitimp(sup, sig);
+                    // blocked connection implies no supply
+                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
+                    // signal and no block and dust imply supply
+                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
                 } else {
                     // Supplyable signal strength from the bottom left is zero
                     try cnf.bitfalse(bl_sup.at(off));
@@ -874,26 +791,17 @@ fn constrainSupplyableSignal(cnf: *Cnf) !void {
                     // SUP = SIG AND NOT BLOCK AND DUST
                     const sup = tr_sup.at(off);
                     const sig = tr_sig.at(off);
-                    const block = t_block_maybe.?;
-                    const dust = is_dust.at(pos);
+                    const blk = t_block_maybe.?;
+                    const dst = is_dust.at(pos);
 
-                    // // If the supply bit is set, it implies dust
-                    // try cnf.bitimp(sup, dust);
-                    // // If the supply bit is set, it implies the signal bit
-                    // try cnf.bitimp(sup, sig);
-                    // // There is either no supply bit, or no block
-                    // try cnf.clause(&.{ sup, block }, &.{ 0, 0 });
-                    // // Supply requires dust, signal, and no block
-                    // try cnf.clause(
-                    //     &.{ sup, block, sig, dust },
-                    //     &.{ 0, 0, 1, 1 },
-                    // );
-
-                    const temp_a = cnf.alloc(1).idx; // NOT BLOCK
-                    try cnf.bitnot(block, temp_a);
-                    const temp_b = cnf.alloc(1).idx; // SIG AND NOT BLOCK
-                    try cnf.bitand(sig, temp_a, temp_b);
-                    try cnf.bitand(dust, temp_b, sup); // SIG AND NOT BLOCK AND DUST
+                    // supply implies dust
+                    try cnf.bitimp(sup, dst);
+                    // supply implies signal strength
+                    try cnf.bitimp(sup, sig);
+                    // blocked connection implies no supply
+                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
+                    // signal and no block and dust imply supply
+                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
                 } else {
                     // Supplyable signal strength from the top right is zero
                     try cnf.bitfalse(tr_sup.at(off));
@@ -903,26 +811,17 @@ fn constrainSupplyableSignal(cnf: *Cnf) !void {
                     // SUP = SIG AND NOT BLOCK AND DUST
                     const sup = br_sup.at(off);
                     const sig = br_sig.at(off);
-                    const block = r_block_maybe.?;
-                    const dust = is_dust.at(pos);
+                    const blk = r_block_maybe.?;
+                    const dst = is_dust.at(pos);
 
-                    // // If the supply bit is set, it implies dust
-                    // try cnf.bitimp(sup, dust);
-                    // // If the supply bit is set, it implies the signal bit
-                    // try cnf.bitimp(sup, sig);
-                    // // There is either no supply bit, or no block
-                    // try cnf.clause(&.{ sup, block }, &.{ 0, 0 });
-                    // // Supply requires dust, signal, and no block
-                    // try cnf.clause(
-                    //     &.{ sup, block, sig, dust },
-                    //     &.{ 0, 0, 1, 1 },
-                    // );
-
-                    const temp_a = cnf.alloc(1).idx; // NOT BLOCK
-                    try cnf.bitnot(block, temp_a);
-                    const temp_b = cnf.alloc(1).idx; // SIG AND NOT BLOCK
-                    try cnf.bitand(sig, temp_a, temp_b);
-                    try cnf.bitand(dust, temp_b, sup); // SIG AND NOT BLOCK AND DUST
+                    // supply implies dust
+                    try cnf.bitimp(sup, dst);
+                    // supply implies signal strength
+                    try cnf.bitimp(sup, sig);
+                    // blocked connection implies no supply
+                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
+                    // signal and no block and dust imply supply
+                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
                 } else {
                     // Supplyable signal strength from the bottom right is zero
                     try cnf.bitfalse(br_sup.at(off));
