@@ -1,3 +1,6 @@
-zig build run -- e
-cadical out.cnf | tee out.txt
-cat out.txt | zig build run -- d
+zig build run -- e &&
+kissat problem.cnf --factor=false --sat -v |
+tee /dev/tty |
+tee kissat.txt |
+zig build run -- d |
+tee result.txt
