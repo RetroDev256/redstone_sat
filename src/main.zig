@@ -7,15 +7,6 @@ const Bits = Cnf.Bits;
 
 // ----------------------------------------------------------------------- MAIN
 
-// OLD: 125.77 seconds, 61480960 bytes
-// NEW: 171.03 seconds, 77377536 bytes
-
-// TODO:
-// - constrain the output side to only have dust (if it is an output) or blocks or air
-// - constrain the input side to only have dust (if it is an input) or blocks or air
-// - the order of each input_map and output_map are implied to maintain vertical order
-// - blocks only exist if they have a torch under them, or dust on the side or top
-
 // Full adder:
 // - 9 x 6 not possible
 // - 8 x 7 not possible
@@ -51,6 +42,9 @@ const Bits = Cnf.Bits;
 // - 9 x 5 not possible
 // - 10 x 6 not possible
 
+// WIRE SWAPPING:
+// - 8 x 6 not possible
+
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
 
@@ -80,13 +74,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
 }
 
 /// number of inputs to the circuit
-const inputs = 2;
+const inputs = 3;
 /// number of outputs to the circuit
-const outputs = 1;
+const outputs = 2;
 /// length of the redstone build in number of blocks
-const width = 3;
+const width = 17;
 /// height of the redstone build in number of blocks
-const height = 4;
+const height = 9;
 /// maximum number of torches the circuit can have
 const max_torch: ?u64 = null;
 /// whether or not to allow left facing torches
@@ -95,18 +89,36 @@ const allow_left_torch = false;
 const allow_standing_torch = true;
 /// whether or not to allow right facing torches
 const allow_right_torch = true;
+/// whether or not to allow reordering inputs
+const enforce_input_ordering = false;
+/// whether or not to allow reordering outputs
+const enforce_output_ordering = false;
 /// complexity of the circuit (number of IDs - 1)
-const complexity = 23;
+const complexity = 32;
 /// maximum power that a redstone line can have
 const max_power = 15;
 
 const TruthRow = struct { [inputs]u1, u1 };
 const truth: [outputs][]const TruthRow = .{
-    &.{ // IMPLICATION
-        .{ .{ 0, 0 }, 1 },
-        .{ .{ 0, 1 }, 1 },
-        .{ .{ 1, 0 }, 1 },
-        .{ .{ 1, 1 }, 0 },
+    &.{ // summation bit
+        .{ .{ 0, 0, 0 }, 0 },
+        .{ .{ 0, 0, 1 }, 1 },
+        .{ .{ 0, 1, 0 }, 1 },
+        .{ .{ 0, 1, 1 }, 0 },
+        .{ .{ 1, 0, 0 }, 1 },
+        .{ .{ 1, 0, 1 }, 0 },
+        .{ .{ 1, 1, 0 }, 0 },
+        .{ .{ 1, 1, 1 }, 1 },
+    },
+    &.{ // carry bit
+        .{ .{ 0, 0, 0 }, 0 },
+        .{ .{ 0, 0, 1 }, 0 },
+        .{ .{ 0, 1, 0 }, 0 },
+        .{ .{ 0, 1, 1 }, 1 },
+        .{ .{ 1, 0, 0 }, 0 },
+        .{ .{ 1, 0, 1 }, 1 },
+        .{ .{ 1, 1, 0 }, 1 },
+        .{ .{ 1, 1, 1 }, 1 },
     },
 };
 
@@ -573,20 +585,125 @@ fn enforceInputOutputMapImplication(cnf: *Cnf) !void {
     }
 }
 
-// prevent specific inputs and outputs from overlapping each other
-fn constrainOverlappingInputsOutputs(cnf: *Cnf) !void {
+// Constrain the sides to only have input / output stuff
+fn constrainInputOutputSideBlocks(cnf: *Cnf) !void {
     for (0..height) |y| {
-        // No two specific inputs map to the same block
-        for (0..inputs) |lhs| for (0..lhs) |rhs| try cnf.clause(
-            &.{ input_map[lhs].at(y), input_map[rhs].at(y) },
-            &.{ 0, 0 },
-        );
+        const pos = y * width;
+        // If the block is dust, it must be an input
+        try cnf.bitimp(is_dust.at(pos), is_input.at(y));
+    }
 
-        // No two specific outputs map to the same block
-        for (0..outputs) |lhs| for (0..lhs) |rhs| try cnf.clause(
-            &.{ output_map[lhs].at(y), output_map[rhs].at(y) },
-            &.{ 0, 0 },
-        );
+    for (0..height) |y| {
+        const pos = y * width + width - 1;
+        // If the block is dust, it must be an output
+        try cnf.bitimp(is_dust.at(pos), is_output.at(y));
+    }
+
+    // No block exists at the top left
+    try cnf.bitfalse(is_block.at(0));
+    // No block exists at the top right
+    try cnf.bitfalse(is_block.at(width - 1));
+
+    for (1..height) |y| {
+        // Blocks must have dust above them on the input side
+        const block_input = is_block.at(y * width);
+        const dust_input = is_dust.at(y * width - width);
+        try cnf.bitimp(block_input, dust_input);
+        // Blocks must have dust above them on the output side
+        const block_output = is_block.at(y * width + width - 1);
+        const dust_output = is_dust.at(y * width - 1);
+        try cnf.bitimp(block_output, dust_output);
+    }
+
+    // For every state, if there is a torch above an input redstone dust, the
+    // torch must be on if the dust is on, otherwise the torch must be off.
+    // This prevents the torch from incorrectly powering the input from above.
+
+    for (0..states) |state| {
+        for (1..height) |y| {
+            const dust_pos = y * width;
+            const torch_pos = (y - 1) * width;
+
+            try cnf.clause(&.{
+                // either there is **NOT** a torch above
+                is_torch.at(torch_pos),
+                // OR there is **NOT** an input below it
+                is_input.at(y),
+                // OR the torch **IS** powered on
+                is_torch_on[state].at(torch_pos),
+                // OR the dust is **NOT** powered on
+                is_dust_powered[state].at(dust_pos),
+            }, &.{ 0, 0, 1, 0 });
+
+            try cnf.clause(&.{
+                // either there is **NOT** a torch above
+                is_torch.at(torch_pos),
+                // OR there is **NOT** an input below it
+                is_input.at(y),
+                // OR the torch is **NOT** powered on
+                is_torch_on[state].at(torch_pos),
+                // OR the dust **IS** powered on
+                is_dust_powered[state].at(dust_pos),
+            }, &.{ 0, 0, 0, 1 });
+        }
+    }
+
+    // For every state, if there is a torch two blocks below an input redstone
+    // dust, the torch must be powered if the torch is powered, or off if off.
+    // This prevents the torch from incorrectly powering the input from below.
+
+    for (0..states) |state| {
+        for (2..height) |y| {
+            const torch_pos = y * width;
+            const dust_pos = (y - 2) * width;
+
+            try cnf.clause(&.{
+                // either there is **NOT** a torch below
+                is_torch.at(torch_pos),
+                // OR there is **NOT** an input above it
+                is_input.at(y - 2),
+                // OR the torch **IS** powered on
+                is_torch_on[state].at(torch_pos),
+                // OR the dust is **NOT** powered on
+                is_dust_powered[state].at(dust_pos),
+            }, &.{ 0, 0, 1, 0 });
+
+            try cnf.clause(&.{
+                // either there is **NOT** a torch below
+                is_torch.at(torch_pos),
+                // OR there is **NOT** an input above it
+                is_input.at(y - 2),
+                // OR the torch is **NOT** powered on
+                is_torch_on[state].at(torch_pos),
+                // OR the dust **IS** powered on
+                is_dust_powered[state].at(dust_pos),
+            }, &.{ 0, 0, 0, 1 });
+        }
+    }
+}
+
+// Constrain the inputs and outputs to maintain truth table ordering
+fn constrainInputOutputOrdering(cnf: *Cnf) !void {
+    // greater inputs are above lesser inputs
+    if (enforce_input_ordering) {
+        for (0..height) |y_hi| for (0..y_hi) |y_lo| {
+            for (0..inputs) |x_gt| for (0..x_gt) |x_lt| {
+                const a = input_map[x_gt].at(y_hi);
+                const b = input_map[x_lt].at(y_lo);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+            };
+        };
+    }
+
+    // greater outputs are above lesser outputs
+    if (enforce_output_ordering) {
+        for (0..height) |y_hi| for (0..y_hi) |y_lo| {
+            for (0..outputs) |x_gt| for (0..x_gt) |x_lt| {
+                const a = output_map[x_gt].at(y_hi);
+                const b = output_map[x_lt].at(y_lo);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+            };
+        };
     }
 }
 
@@ -1371,23 +1488,6 @@ fn restrictDustGroupId(cnf: *Cnf) !void {
     }
 }
 
-// remove unnecessary torches and dust
-fn restrictUnchangingTorchesAndDust(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        inline for (&.{
-            &.{ is_torch_on, is_torch },
-            &.{ is_dust_powered, is_dust },
-        }) |stateful| {
-            inline for (&.{ 0, 1 }) |power| {
-                for (0..states) |state|
-                    try cnf.clausePart(stateful[0][state].at(pos), power);
-                try cnf.clausePart(stateful[1].at(pos), 0);
-                try cnf.clauseEnd();
-            }
-        }
-    }
-}
-
 // constrain the number of torches
 fn constrainTorchCount(cnf: *Cnf) !void {
     if (max_torch) |count| {
@@ -1474,18 +1574,18 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try constrainDecayableStrength(&cnf);
     std.debug.print("constrainMaxNeighborStrength...\n", .{});
     try constrainMaxNeighborStrength(&cnf);
+    std.debug.print("constrainInputOutputOrdering...\n", .{});
+    try constrainInputOutputOrdering(&cnf);
     std.debug.print("enforceInputOutputCardinality...\n", .{});
     try enforceInputOutputCardinality(&cnf);
+    std.debug.print("constrainInputOutputSideBlocks...\n", .{});
+    try constrainInputOutputSideBlocks(&cnf);
     std.debug.print("constrainSpecificInputDustValue...\n", .{});
     try constrainSpecificInputDustValue(&cnf);
     std.debug.print("constrainSpecificOutputDustValue...\n", .{});
     try constrainSpecificOutputDustValue(&cnf);
-    std.debug.print("restrictUnchangingTorchesAndDust...\n", .{});
-    try restrictUnchangingTorchesAndDust(&cnf);
     std.debug.print("enforceInputOutputMapImplication...\n", .{});
     try enforceInputOutputMapImplication(&cnf);
-    std.debug.print("constrainOverlappingInputsOutputs...\n", .{});
-    try constrainOverlappingInputsOutputs(&cnf);
     std.debug.print("Saving...\n", .{});
 
     // Open "real_file" (real output) and create buffered writer "real"
