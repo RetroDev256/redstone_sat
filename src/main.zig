@@ -11,6 +11,9 @@ const Bits = Cnf.Bits;
 // - 9 x 6 not possible
 // - 8 x 7 not possible
 // - 9 x 7 not possible
+// - 10 x 8 not possible
+// - 26 x 18 IS POSSIBLE !!!!! (468 blocks) **** CURRENT BEST ***
+// - 30 x 20 IS POSSIBLE !!!!! (600 blocks)
 
 // Half adder (- no left facing torches)
 // - 6 x 6 not possible
@@ -40,10 +43,20 @@ const Bits = Cnf.Bits;
 // - 7 x 6 IS POSSIBLE !!!!! (42 blocks) *** CURRENT BEST ***
 // - 8 x 5 not possible
 // - 9 x 5 not possible
-// - 10 x 6 not possible
 
 // WIRE SWAPPING:
 // - 8 x 6 not possible
+// - 8 x 7 not possible
+// - 8 x 8 not possible
+// - 8 x 12 IS POSSIBLE !!!!! (96 blocks)
+// - 9 x 6 not possible
+// - 9 x 7 not possible
+// - 9 x 8 not possible
+// - 9 x 10 IS POSSIBLE !!!!! (90 blocks)
+// - 10 x 6 not possible
+// - 10 x 7 not possible
+// - 10 x 8 IS POSSIBLE !!!!! (80 blocks) *** CURRENT BEST ***
+// - 12 x 6 not possible
 
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
@@ -78,29 +91,35 @@ const inputs = 3;
 /// number of outputs to the circuit
 const outputs = 2;
 /// length of the redstone build in number of blocks
-const width = 17;
+const width = 10;
 /// height of the redstone build in number of blocks
-const height = 9;
+const height = 16;
 /// maximum number of torches the circuit can have
 const max_torch: ?u64 = null;
+/// minimum number of torches the circuit can have
+const min_torch: ?u64 = null;
 /// whether or not to allow left facing torches
 const allow_left_torch = false;
-/// whether or not to allow standing torches
-const allow_standing_torch = true;
 /// whether or not to allow right facing torches
 const allow_right_torch = true;
+/// whether or not to allow standing torches
+const allow_standing_torch = true;
 /// whether or not to allow reordering inputs
 const enforce_input_ordering = false;
 /// whether or not to allow reordering outputs
 const enforce_output_ordering = false;
+/// whether dust and torches need to change state
+const enforce_state_change = false;
+/// restrict redstone dust to be at most one block long
+const single_redstone_dust = true;
+/// prevent cycles in the logic graph - IMPORTANT
+const prevent_cycles = false;
 /// complexity of the circuit (number of IDs - 1)
-const complexity = 32;
-/// maximum power that a redstone line can have
-const max_power = 15;
+const complexity = 0;
 
 const TruthRow = struct { [inputs]u1, u1 };
 const truth: [outputs][]const TruthRow = .{
-    &.{ // summation bit
+    &.{ // summation
         .{ .{ 0, 0, 0 }, 0 },
         .{ .{ 0, 0, 1 }, 1 },
         .{ .{ 0, 1, 0 }, 1 },
@@ -110,7 +129,7 @@ const truth: [outputs][]const TruthRow = .{
         .{ .{ 1, 1, 0 }, 0 },
         .{ .{ 1, 1, 1 }, 1 },
     },
-    &.{ // carry bit
+    &.{ // carry gate
         .{ .{ 0, 0, 0 }, 0 },
         .{ .{ 0, 0, 1 }, 0 },
         .{ .{ 0, 1, 0 }, 0 },
@@ -126,6 +145,8 @@ const truth: [outputs][]const TruthRow = .{
 const area = width * height;
 /// simulating every possible state in parallel
 const states = 1 << inputs;
+/// maximum power that a redstone line can have
+const max_power = @min(width, 15);
 
 /// "air" is a lack of dust, torch, or block
 var is_air: Bits = undefined; // area number of bits
@@ -349,15 +370,51 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
     try stdout.flush();
 }
 
-const air_display: [3][3]u8 = .{ "   ".*, " . ".*, "   ".* };
-const block_display: [3][3]u8 = .{ "###".*, "###".*, "###".* };
-const dust_display: [3][3]u8 = .{ "   ".*, "   ".*, "%%%".* };
-const standing_torch_display: [3][3]u8 = .{ " o ".*, " | ".*, " | ".* };
-const left_torch_display: [3][3]u8 = .{ "o  ".*, " \\ ".*, "  \\".* };
-const right_torch_display: [3][3]u8 = .{ "  o".*, " / ".*, "/  ".* };
-const input_display: [3][3]u8 = .{ "III".*, " I ".*, "III".* };
-const output_display: [3][3]u8 = .{ "OOO".*, "O O".*, "OOO".* };
-const unknown_display: [3][3]u8 = .{ "???".*, "???".*, "???".* };
+const air_display: [3][3]u8 = .{
+    "   ".*,
+    " . ".*,
+    "   ".*,
+};
+const block_display: [3][3]u8 = .{
+    "###".*,
+    "###".*,
+    "###".*,
+};
+const dust_display: [3][3]u8 = .{
+    "   ".*,
+    "   ".*,
+    "===".*,
+};
+const standing_torch_display: [3][3]u8 = .{
+    " o ".*,
+    " | ".*,
+    " | ".*,
+};
+const left_torch_display: [3][3]u8 = .{
+    "o  ".*,
+    " \\ ".*,
+    "  \\".*,
+};
+const right_torch_display: [3][3]u8 = .{
+    "  o".*,
+    " / ".*,
+    "/  ".*,
+};
+const input_display: [3][3]u8 = .{
+    "+-+".*,
+    " | ".*,
+    "+-+".*,
+};
+const output_display: [3][3]u8 = .{
+    "/-\\".*,
+    "| |".*,
+    "\\-/".*,
+};
+const unknown_display: [3][3]u8 = .{
+    "? ?".*,
+    " ? ".*,
+    "? ?".*,
+};
 
 // Inputs are only at the beginning of a row
 fn isInputPosition(pos: u64) ?u64 {
@@ -1257,8 +1314,10 @@ fn enforceSignalDecay(cnf: *Cnf) !void {
 
 // Constrain all numbers we are working with to be unary
 fn constrainUnaryNumbers(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        try cnf.unaryConstrain(segment_id[pos]);
+    if (prevent_cycles) {
+        for (0..area) |pos| {
+            try cnf.unaryConstrain(segment_id[pos]);
+        }
     }
 
     for (0..states) |state| {
@@ -1490,9 +1549,16 @@ fn restrictDustGroupId(cnf: *Cnf) !void {
 
 // constrain the number of torches
 fn constrainTorchCount(cnf: *Cnf) !void {
-    if (max_torch) |count| {
+    if (max_torch != null or min_torch != null) {
         const torch_card = try cnf.unaryTotalize(is_torch);
-        try cnf.unaryConstrainLEVal(torch_card, count);
+
+        if (max_torch) |count| {
+            try cnf.unaryConstrainLEVal(torch_card, count);
+        }
+
+        if (min_torch) |count| {
+            try cnf.unaryConstrainGEVal(torch_card, count);
+        }
     }
 }
 
@@ -1504,6 +1570,114 @@ fn constrainTorchType(cnf: *Cnf) !void {
         try cnf.bitfalse(is_left_torch.at(pos));
     if (!allow_right_torch) for (0..area) |pos|
         try cnf.bitfalse(is_right_torch.at(pos));
+}
+
+// remove unchanging torches and dust
+fn restrictUnchangingTorchesAndDust(cnf: *Cnf) !void {
+    if (enforce_state_change) {
+        for (0..area) |pos| {
+            inline for (&.{
+                &.{ is_torch_on, is_torch },
+                &.{ is_dust_powered, is_dust },
+            }) |stateful| {
+                inline for (&.{ 0, 1 }) |power| {
+                    for (0..states) |state|
+                        try cnf.clausePart(stateful[0][state].at(pos), power);
+                    try cnf.clausePart(stateful[1].at(pos), 0);
+                    try cnf.clauseEnd();
+                }
+            }
+        }
+    }
+}
+
+// restrict redstone dust to not touch other redstone dust
+fn restrictRedstoneDustConnectivity(cnf: *Cnf) !void {
+    if (single_redstone_dust) {
+        // Horizontal redstone dust
+        for (0..width - 1) |x| {
+            for (0..height) |y| {
+                const pos = x + y * width;
+
+                const l = is_dust.at(pos);
+                const r = is_dust.at(pos + 1);
+
+                // No dust can exist side-by-side with other dust
+                try cnf.clause(&.{ l, r }, &.{ 0, 0 });
+            }
+        }
+
+        // Diagonal redstone dust
+        for (0..width - 1) |x| {
+            for (0..height - 1) |y| {
+                const pos = x + y * width;
+
+                const tl = is_dust.at(pos);
+                const tr = is_dust.at(pos + 1);
+                const bl = is_dust.at(pos + width);
+                const br = is_dust.at(pos + width + 1);
+
+                // upper-right diagonal redstone dust implies top left block
+                try cnf.clause(&.{ bl, tr, tl }, &.{ 0, 0, 1 });
+
+                // downward-left diagonal redstone dust implies top right block
+                try cnf.clause(&.{ tl, br, tr }, &.{ 0, 0, 1 });
+            }
+        }
+    }
+}
+
+// restrict torches from obviously burning out instantly
+fn restrictSimpleTorchCycles(cnf: *Cnf) !void {
+
+    //        BLK
+    //        BLK
+    //  DST   BLK
+    //
+    //  BLK     o
+    //  BLK    /
+    //  BLK   /
+
+    if (allow_right_torch) {
+        for (0..width - 1) |x| {
+            for (0..height - 1) |y| {
+                const pos = x + y * width;
+                const tl_d = is_dust.at(pos);
+                const tr_b = is_block.at(pos + 1);
+                const br_t = is_right_torch.at(pos + width + 1);
+                try cnf.clause(&.{ tl_d, tr_b, br_t }, &.{ 0, 0, 0 });
+            }
+        }
+    }
+
+    //  BLK
+    //  BLK
+    //  BLK   DST
+    //
+    //  o     BLK
+    //   \    BLK
+    //    \   BLK
+
+    if (allow_left_torch) {
+        for (0..width - 1) |x| {
+            for (0..height - 1) |y| {
+                const pos = x + y * width;
+                const tl_b = is_block.at(pos);
+                const tr_d = is_dust.at(pos + 1);
+                const bl_t = is_left_torch.at(pos + width);
+                try cnf.clause(&.{ tl_b, tr_d, bl_t }, &.{ 0, 0, 0 });
+            }
+        }
+    }
+}
+
+// block torches from appearing on the very bottom
+fn restrictBottomTorches(cnf: *Cnf) !void {
+    for (0..width) |x| {
+        const y_off = (height - 1) * width;
+        const torch = is_torch.at(x + y_off);
+        try cnf.bitfalse(torch);
+    }
 }
 
 fn encodeMain(io: Io, _: Allocator) !void {
@@ -1520,6 +1694,19 @@ fn encodeMain(io: Io, _: Allocator) !void {
     var cnf: Cnf = .init(temp);
     defer cnf.deinit();
 
+    if (prevent_cycles) {
+        std.debug.print("restrictTorchBlockId...\n", .{});
+        try restrictTorchBlockId(&cnf);
+        std.debug.print("restrictBlockTorchId...\n", .{});
+        try restrictBlockTorchId(&cnf);
+        std.debug.print("restrictBlockDustId...\n", .{});
+        try restrictBlockDustId(&cnf);
+        std.debug.print("restrictDustTorchId...\n", .{});
+        try restrictDustTorchId(&cnf);
+        std.debug.print("restrictDustGroupId...\n", .{});
+        try restrictDustGroupId(&cnf);
+    }
+
     std.debug.print("initializeGlobals...\n", .{});
     try initializeGlobals(&cnf);
     std.debug.print("enforceCanDecay...\n", .{});
@@ -1534,24 +1721,16 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try constrainTorchType(&cnf);
     std.debug.print("enforceGeneralPower...\n", .{});
     try enforceGeneralPower(&cnf);
-    std.debug.print("restrictBlockDustId...\n", .{});
-    try restrictBlockDustId(&cnf);
     std.debug.print("enforceCanPropagate...\n", .{});
     try enforceCanPropagate(&cnf);
-    std.debug.print("restrictDustGroupId...\n", .{});
-    try restrictDustGroupId(&cnf);
     std.debug.print("enforceWeakPowering...\n", .{});
     try enforceWeakPowering(&cnf);
-    std.debug.print("restrictDustTorchId...\n", .{});
-    try restrictDustTorchId(&cnf);
     std.debug.print("constrainTorchCount...\n", .{});
     try constrainTorchCount(&cnf);
-    std.debug.print("restrictBlockTorchId...\n", .{});
-    try restrictBlockTorchId(&cnf);
-    std.debug.print("restrictTorchBlockId...\n", .{});
-    try restrictTorchBlockId(&cnf);
     std.debug.print("enforceDustIsPowered...\n", .{});
     try enforceDustIsPowered(&cnf);
+    std.debug.print("restrictBottomTorches...\n", .{});
+    try restrictBottomTorches(&cnf);
     std.debug.print("enforceDirectPowering...\n", .{});
     try enforceDirectPowering(&cnf);
     std.debug.print("enforceStrongPowering...\n", .{});
@@ -1566,6 +1745,8 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try enforceInputOutputDust(&cnf);
     std.debug.print("enforceTorchesOnBlocks...\n", .{});
     try enforceTorchesOnBlocks(&cnf);
+    std.debug.print("restrictSimpleTorchCycles...\n", .{});
+    try restrictSimpleTorchCycles(&cnf);
     std.debug.print("constrainSupplyableSignal...\n", .{});
     try constrainSupplyableSignal(&cnf);
     std.debug.print("enforceDustSignalExistence...\n", .{});
@@ -1586,6 +1767,10 @@ fn encodeMain(io: Io, _: Allocator) !void {
     try constrainSpecificOutputDustValue(&cnf);
     std.debug.print("enforceInputOutputMapImplication...\n", .{});
     try enforceInputOutputMapImplication(&cnf);
+    std.debug.print("restrictUnchangingTorchesAndDust...\n", .{});
+    try restrictUnchangingTorchesAndDust(&cnf);
+    std.debug.print("restrictRedstoneDustConnectivity...\n", .{});
+    try restrictRedstoneDustConnectivity(&cnf);
     std.debug.print("Saving...\n", .{});
 
     // Open "real_file" (real output) and create buffered writer "real"
