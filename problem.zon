@@ -1,0 +1,54 @@
+.{
+    // how many inputs there are to the circuit
+    .input_count = 2,
+    // how many outputs there are to the circuit
+    .output_count = 1,
+    // how many blocks [west to east] the circuit is
+    .width = 10,
+    // how many blocks [north to south] the circuit is
+    .length = 10,
+    // truth table that the circuit must satisfy
+    .truth = .{
+        .{
+            .{ .{ 0, 0 }, 0 },
+            .{ .{ 0, 1 }, 1 },
+            .{ .{ 1, 0 }, 1 },
+            .{ .{ 1, 1 }, 0 },
+        },
+    },
+
+    // maximum number of redstone dusts
+    .max_dust = null,
+    // maximum number of redstone torches
+    .max_torch = null,
+
+    // maximum number of north facing torches
+    .max_n_torch = null,
+    // maximum number of east facing torches
+    .max_e_torch = null,
+    // maximum number of south facing torches
+    .max_s_torch = null,
+    // maximum number of west facing torches
+    .max_w_torch = null,
+
+    // whether to allow a weakly powered block as an output
+    .allow_block_output = true,
+    // whether to allow a torch as an output
+    .allow_torch_output = true,
+    // whether to allow a dust as an output
+    .allow_dust_output = true,
+    // whether to redirect input dust on the edges
+    .redirect_input_edge_dust = true,
+    // whether to redirect output dust on the edges
+    .redirect_output_edge_dust = true,
+
+    // whether to allow a weakly powered block as an input
+    .allow_weak_powered_block_input = true,
+    // whether to allow dust (max signal strength) as an input
+    .allow_max_signal_dust_input = true,
+
+    // enforce acyclic graph with a unary counter
+    .transition_bits = 15,
+    // override redstone dust max signal strength
+    .max_signal_strength = 15,
+}

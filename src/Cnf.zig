@@ -463,8 +463,8 @@ pub fn unaryConstrainLEVal(self: *@This(), bits: Bits, val: u64) !void {
 /// to some known constant. Assumes that the input
 /// is indeed valid unary. (eg. 11111111111110000)
 pub fn unaryConstrainEQVal(self: *@This(), bits: Bits, val: u64) !void {
-    try self.unaryConstrainGEVal(bits, val + 0); // X >= val
-    try self.unaryConstrainLTVal(bits, val + 1); // X <= val
+    try self.unaryConstrainGEVal(bits, val); // X >= val
+    try self.unaryConstrainLEVal(bits, val); // X <= val
 }
 
 /// Constrain some number of bits to be a valid

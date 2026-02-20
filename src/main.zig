@@ -7,263 +7,391 @@ const Bits = Cnf.Bits;
 
 // ----------------------------------------------------------------------- MAIN
 
-// Full adder:
-// - 9 x 6 not possible
-// - 8 x 7 not possible
-// - 9 x 7 not possible
-// - 10 x 8 not possible
-// - 26 x 18 IS POSSIBLE !!!!! (468 blocks) **** CURRENT BEST ***
-// - 30 x 20 IS POSSIBLE !!!!! (600 blocks)
+pub fn main(init: std.process.Init.Minimal) void {
 
-// Half adder (- no left facing torches)
-// - 6 x 6 not possible
-// - 6 x 7 not possible
-// - 7 x 6 not possible
-// - 7 x 7 not possible
-// - 8 x 5 not possible
-// - 8 x 6 not possible
-// - 8 x 7 IS POSSIBLE !!!!! (56 blocks)
-// - 8 x 8 IS POSSIBLE !!!!! (64 blocks)
-// - 9 x 5 not possible
-// - 9 x 6 IS POSSIBLE !!!!! (54 blocks) *** CURRENT BEST ***
-// - 9 x 7 IS POSSIBLE !!!!! (63 blocks)
-// - 9 x 8 IS POSSIBLE !!!!! (72 blocks)
-// - 9 x 9 IS POSSIBLE !!!!! (81 blocks)
-// - 10 x 5 not possible
-// - 11 x 5 not possible
-// - 12 x 5 not possible
-// - 13 x 5 not possible
-// - 14 x 5 not possible
-// - 15 x 5 not possible
-// - 16 x 5 not possible
+    // Initialize process
 
-// NAND + NOR:
-// - 6 x 6 not possible
-// - 7 x 5 not possible
-// - 7 x 6 IS POSSIBLE !!!!! (42 blocks) *** CURRENT BEST ***
-// - 8 x 5 not possible
-// - 9 x 5 not possible
-
-// WIRE SWAPPING:
-// - 8 x 6 not possible
-// - 8 x 7 not possible
-// - 8 x 8 not possible
-// - 8 x 12 IS POSSIBLE !!!!! (96 blocks)
-// - 9 x 6 not possible
-// - 9 x 7 not possible
-// - 9 x 8 not possible
-// - 9 x 10 IS POSSIBLE !!!!! (90 blocks)
-// - 10 x 6 not possible
-// - 10 x 7 not possible
-// - 10 x 8 IS POSSIBLE !!!!! (80 blocks) *** CURRENT BEST ***
-// - 12 x 6 not possible
-
-pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
 
     var threaded: Io.Threaded = .init_single_threaded;
     defer threaded.deinit();
     const io = threaded.ioBasic();
 
-    var args = try std.process.Args.Iterator.initAllocator(init.args, gpa);
+    // Print the usage of our program on error
+    // Indicate error by exiting with status 1
+
+    var process: []const u8 = "UNKNOWN";
+
+    errdefer {
+        std.debug.print(
+            \\ USAGE: {s} [MODE] [CONFIG] [PATH]
+            \\   MODE:
+            \\     e --> Encodes CNF problem
+            \\     d --> Decodes CNF problem
+            \\   CONFIG:
+            \\     * Path to valid .zon config
+            \\     * Required by modes e and d
+            \\   PATH:
+            \\     * In mode e: path to output .cnf file
+            \\     * In mode d: path to solution file
+            \\     * Required by modes e and d
+            \\
+        , .{process});
+        std.process.exit(1);
+    }
+
+    // Capture the CLI arguments
+
+    const ArgsIterator = std.process.Args.Iterator;
+    var args: ArgsIterator = try .initAllocator(init.args, gpa);
     defer args.deinit();
 
-    const process_name = args.next().?;
-    if (args.next()) |mode_str| {
-        if (std.mem.eql(u8, mode_str, "e")) {
-            return try encodeMain(io, gpa);
-        } else if (std.mem.eql(u8, mode_str, "d")) {
-            return try decodeMain(io, gpa);
-        }
-    }
+    process = args.next() orelse
+        return error.LackingArgs;
+    const mode_str = args.next() orelse
+        return error.LackingArgs;
+    const config_path = args.next() orelse
+        return error.LackingArgs;
+    const path = args.next() orelse
+        return error.LackingArgs;
 
-    std.debug.print(
-        \\ USAGE: {s} [MODE]
-        \\   MODE:
-        \\     e --> encodes CNF problem
-        \\     d --> decodes CNF problem
-        \\
-    , .{process_name});
+    // Read the configuation and parse into an options struct
+
+    const cwd = std.Io.Dir.cwd();
+    const config_file = try cwd.openFile(io, config_path, .{});
+    defer config_file.close(io);
+    var config_buf: [64]u8 = undefined;
+    var config_file_reader = config_file.reader(io, &config_buf);
+    const config_reader = &config_file_reader.interface;
+    var config_allocating: Io.Writer.Allocating = .init(gpa);
+    defer config_allocating.deinit();
+    const config_writer = &config_allocating.writer;
+    _ = try config_reader.streamRemaining(config_writer);
+    const config_text = try config_allocating.toOwnedSliceSentinel(0);
+    const config: Options = try .init(gpa, @ptrCast(config_text));
+    defer config.deinit(gpa);
+
+    // Run the target program mode
+
+    if (std.mem.eql(u8, mode_str, "e")) {
+        return try encodeMain(io, gpa, &config, path);
+    } else if (std.mem.eql(u8, mode_str, "d")) {
+        return try decodeMain(io, gpa, &config, path);
+    } else {
+        return error.UnknownMode;
+    }
 }
 
-/// number of inputs to the circuit
-const inputs = 3;
-/// number of outputs to the circuit
-const outputs = 2;
-/// length of the redstone build in number of blocks
-const width = 10;
-/// height of the redstone build in number of blocks
-const height = 16;
-/// maximum number of torches the circuit can have
-const max_torch: ?u64 = null;
-/// minimum number of torches the circuit can have
-const min_torch: ?u64 = null;
-/// whether or not to allow left facing torches
-const allow_left_torch = false;
-/// whether or not to allow right facing torches
-const allow_right_torch = true;
-/// whether or not to allow standing torches
-const allow_standing_torch = true;
-/// whether or not to allow reordering inputs
-const enforce_input_ordering = false;
-/// whether or not to allow reordering outputs
-const enforce_output_ordering = false;
-/// whether dust and torches need to change state
-const enforce_state_change = false;
-/// restrict redstone dust to be at most one block long
-const single_redstone_dust = true;
-/// prevent cycles in the logic graph - IMPORTANT
-const prevent_cycles = false;
-/// complexity of the circuit (number of IDs - 1)
-const complexity = 0;
+// TODO:
+// - Add something to config that allows people to block out positions
+// - Add something to config that allows constraining of input/outputs
+// - Add something to select either/or torches/dust for output types
+// - Add something to select either/or dust/blocks for input types
+// - Add option to allow inputs or outputs to always be negated
 
-const TruthRow = struct { [inputs]u1, u1 };
-const truth: [outputs][]const TruthRow = .{
-    &.{ // summation
-        .{ .{ 0, 0, 0 }, 0 },
-        .{ .{ 0, 0, 1 }, 1 },
-        .{ .{ 0, 1, 0 }, 1 },
-        .{ .{ 0, 1, 1 }, 0 },
-        .{ .{ 1, 0, 0 }, 1 },
-        .{ .{ 1, 0, 1 }, 0 },
-        .{ .{ 1, 1, 0 }, 0 },
-        .{ .{ 1, 1, 1 }, 1 },
-    },
-    &.{ // carry gate
-        .{ .{ 0, 0, 0 }, 0 },
-        .{ .{ 0, 0, 1 }, 0 },
-        .{ .{ 0, 1, 0 }, 0 },
-        .{ .{ 0, 1, 1 }, 1 },
-        .{ .{ 1, 0, 0 }, 0 },
-        .{ .{ 1, 0, 1 }, 1 },
-        .{ .{ 1, 1, 0 }, 1 },
-        .{ .{ 1, 1, 1 }, 1 },
-    },
+// Constraint TODOs:
+// - Dust which is also an input should be considered when finding out how it redirects
+// - Find out how the heck I will encode redirection of dust
+
+const Options = struct {
+    // how many inputs there are to the circuit
+    input_count: u64,
+    // how many outputs there are to the circuit
+    output_count: u64,
+    // how many blocks [west to east] the circuit is
+    width: u64,
+    // how many blocks [north to south] the circuit is
+    length: u64,
+    // truth table that the circuit must satisfy
+    truth: []const []const struct { []const u1, u1 },
+
+    // maximum number of redstone dusts
+    max_dust: ?u64,
+    // maximum number of redstone torches
+    max_torch: ?u64,
+
+    // maximum number of north facing torches
+    max_n_torch: ?u64,
+    // maximum number of east facing torches
+    max_e_torch: ?u64,
+    // maximum number of south facing torches
+    max_s_torch: ?u64,
+    // maximum number of west facing torches
+    max_w_torch: ?u64,
+
+    // whether to allow a weakly powered block as an output
+    allow_block_output: bool,
+    // whether to allow a torch as an output
+    allow_torch_output: bool,
+    // whether to allow a dust as an output
+    allow_dust_output: bool,
+    // whether to redirect input dust on the edges
+    redirect_input_edge_dust: bool,
+    // whether to redirect output dust on the edges
+    redirect_output_edge_dust: bool,
+
+    // whether to allow a weakly powered block as an input
+    allow_weak_powered_block_input: bool,
+    // whether to allow dust (max signal strength) as an input
+    allow_max_signal_dust_input: bool,
+
+    // enforce acyclic graph with a unary counter
+    transition_bits: u64,
+    // redstone dust max signal strength
+    max_signal_strength: ?u64,
+
+    fn init(gpa: Allocator, source: [:0]const u8) !@This() {
+        @setEvalBranchQuota(10_000); // for fromSliceAlloc
+        const fromSliceAlloc = std.zon.parse.fromSliceAlloc;
+        const self = try fromSliceAlloc(@This(), gpa, source, null, .{});
+
+        if (self.output_count == 0)
+            return error.ZeroOutputCount;
+        if (self.input_count == 0)
+            return error.ZeroInputCount;
+        if (self.truth.len != self.output_count)
+            return error.MismatchingOutputCount;
+
+        for (self.truth) |output| {
+            for (output) |row| {
+                if (row[0].len != self.input_count)
+                    return error.MismatchingInputCount;
+            }
+        }
+
+        return self;
+    }
+
+    fn deinit(self: *const @This(), gpa: Allocator) void {
+        std.zon.parse.free(gpa, self.*);
+    }
+
+    fn area(self: *const @This()) u64 {
+        return self.width * self.length;
+    }
+
+    fn states(self: *const @This()) u64 {
+        return @as(u64, 1) << @intCast(self.input_count);
+    }
 };
 
-/// area of the redstone build in number of blocks
-const area = width * height;
-/// simulating every possible state in parallel
-const states = 1 << inputs;
-/// maximum power that a redstone line can have
-const max_power = @min(width, 15);
+const Variables = struct {
+    false_bit: u64, // always false
+    true_bit: u64, // always true
 
-/// "air" is a lack of dust, torch, or block
-var is_air: Bits = undefined; // area number of bits
-/// "dust" is a lack of air, torch, or block
-var is_dust: Bits = undefined; // area number of bits
-/// "torch" is a lack of air, dust, or block
-var is_torch: Bits = undefined; // area number of bits
-/// "block" is a lack of air, dust, or torch
-var is_block: Bits = undefined; // area number of bits
+    // [position: opt.area()]
+    air: Bits, // whether position is air
+    dust: Bits, // whether position is dust
+    torch: Bits, // whether position is torch
+    block: Bits, // whether position is block
 
-/// "inputs" are redstone dust
-var is_input: Bits = undefined; // height number of bits
-/// "outputs" are redstone dust
-var is_output: Bits = undefined; // height number of bits
+    // [position: opt.area()]
+    n_redirect: Bits, // northern dust redirection (or edge I/O)
+    e_redirect: Bits, // eastern dust redirection (or edge I/O)
+    s_redirect: Bits, // southern dust redirection (or edge I/O)
+    w_redirect: Bits, // western dust redirection (or edge I/O)
 
-/// select the specific input that maps to that block
-var input_map: [inputs]Bits = undefined; // height of bits
-/// select the specific output that maps to that block
-var output_map: [outputs]Bits = undefined; // height of bits
+    // [position: opt.area()]
+    n_connect: Bits, // dust connected to the north (looser redirection)
+    e_connect: Bits, // dust connected to the east (looser redirection)
+    s_connect: Bits, // dust connected to the south (looser redirection)
+    w_connect: Bits, // dust connected to the west (looser redirection)
 
-/// standing torches are connected to the block below them
-var is_standing_torch: Bits = undefined; // area number of bits
-/// left torches are connected to the block on their right
-var is_left_torch: Bits = undefined; // area number of bits
-/// right torches are connected to the block on their left
-var is_right_torch: Bits = undefined; // area number of bits
+    // [position: opt.area()]
+    n_torch: Bits, // whether position is north facing torch
+    e_torch: Bits, // whether position is east facing torch
+    s_torch: Bits, // whether position is south facing torch
+    w_torch: Bits, // whether position is west facing torch
 
-/// segment IDs to prevent state cycles - preventing latches - unary
-var segment_id: [area]Bits = undefined; // complexity number of bits
+    // [position: opt.area()]
+    input: Bits, // whether position is input
+    output: Bits, // whether position is output
 
-/// torch state, whether they are on or off
-var is_torch_on: [states]Bits = undefined; // area number of bits
-/// blocks that are powered by redstone dust
-var is_weakly_powered: [states]Bits = undefined; // area number of bits
-/// blocks that are powered by redstone torches
-var is_strongly_powered: [states]Bits = undefined; // area number of bits
-/// whether or not a block is powered in any way
-var is_powered: [states]Bits = undefined; // area number of bits
-/// whether the dust has a signal strength greater than zero
-var is_dust_powered: [states]Bits = undefined; // area number of bits
-/// whether signal strength can be calculated or propagated for this area
-var can_propagate: [states]Bits = undefined; // area number of bits
-/// whether the dust was directly powered by a block or torch
-var is_directly_powered: [states]Bits = undefined; // area number of bits
-/// whether the dust signal strength can decay from surrounding dust
-var can_decay: [states]Bits = undefined; // area number of bits
+    // [input: opt.input_count]
+    // * [position: opt.area()]
+    input_map: Bits, // selector for specific inputs
+    // [input: opt.output_count]
+    // * [position: opt.area()]
+    output_map: Bits, // selector for specific outputs
 
-/// Each block in each state can have up to max_power signal strength - unary
-var signal_strength: [states][area]Bits = undefined; // max_power bits
-/// The maximum signal strength of dust that connects to this - unary
-var max_signal_strength: [states][area]Bits = undefined; // max_power bits
-/// The supplyable signal strength from top left dust - unary
-var supply_top_left: [states][area]Bits = undefined; // max_power bits
-/// The supplyable signal strength from bottom left dust - unary
-var supply_bottom_left: [states][area]Bits = undefined; // max_power bits
-/// The supplyable signal strength from top right dust - unary
-var supply_top_right: [states][area]Bits = undefined; // max_power bits
-/// The supplyable signal strength from bottom right dust - unary
-var supply_bottom_right: [states][area]Bits = undefined; // max_power bits
-/// The signal strength of dust if it can be decayed - unary
-var decay_strength: [states][area]Bits = undefined; // max_power bits
+    // [position: opt.area()]
+    // * [index: opt.transition_bits]
+    segment: Bits, // transitively enforce acyclicity
 
-fn initializeGlobals(cnf: *Cnf) !void {
-    is_air = cnf.alloc(area);
-    is_dust = cnf.alloc(area);
-    is_torch = cnf.alloc(area);
-    is_block = cnf.alloc(area);
+    // [state: opt.states()]
+    // * [position: opt.area()]
+    torch_on: Bits, // whether a torch is powered or not
+    block_on: Bits, // whether a block is powered or not
+    dust_on: Bits, // whether a dust is powered or not
+    connected_on: Bits, // whether adjacent dust is powered or not
 
-    is_input = cnf.alloc(height);
-    is_output = cnf.alloc(height);
+    // [state: opt.states()]
+    // * [position: opt.area()]
+    // * [index: opt.max_signal_strength orelse 0]
+    strength: Bits,
 
-    for (&input_map) |*input|
-        input.* = cnf.alloc(height);
-    for (&output_map) |*output|
-        output.* = cnf.alloc(height);
+    fn init(opt: *const Options, cnf: *Cnf) @This() {
+        const area = opt.area();
+        const states = opt.states();
+        const seg_bits = opt.transition_bits;
+        const power_bits = opt.max_signal_strength orelse 0;
 
-    is_standing_torch = cnf.alloc(area);
-    is_left_torch = cnf.alloc(area);
-    is_right_torch = cnf.alloc(area);
+        return .{
+            .false_bit = cnf.alloc(1).idx,
+            .true_bit = cnf.alloc(1).idx,
 
-    for (&segment_id) |*segment|
-        segment.* = cnf.alloc(complexity);
+            .air = cnf.alloc(area),
+            .dust = cnf.alloc(area),
+            .torch = cnf.alloc(area),
+            .block = cnf.alloc(area),
 
-    for (0..states) |state| {
-        is_torch_on[state] = cnf.alloc(area);
-        is_weakly_powered[state] = cnf.alloc(area);
-        is_strongly_powered[state] = cnf.alloc(area);
-        is_powered[state] = cnf.alloc(area);
-        is_dust_powered[state] = cnf.alloc(area);
-        can_propagate[state] = cnf.alloc(area);
-        is_directly_powered[state] = cnf.alloc(area);
-        can_decay[state] = cnf.alloc(area);
+            .n_redirect = cnf.alloc(area),
+            .e_redirect = cnf.alloc(area),
+            .s_redirect = cnf.alloc(area),
+            .w_redirect = cnf.alloc(area),
 
-        for (0..area) |block| {
-            signal_strength[state][block] = cnf.alloc(max_power);
-            max_signal_strength[state][block] = cnf.alloc(max_power);
-            supply_top_left[state][block] = cnf.alloc(max_power);
-            supply_bottom_left[state][block] = cnf.alloc(max_power);
-            supply_top_right[state][block] = cnf.alloc(max_power);
-            supply_bottom_right[state][block] = cnf.alloc(max_power);
-            decay_strength[state][block] = cnf.alloc(max_power);
-        }
+            .n_connect = cnf.alloc(area),
+            .e_connect = cnf.alloc(area),
+            .s_connect = cnf.alloc(area),
+            .w_connect = cnf.alloc(area),
+
+            .n_torch = cnf.alloc(area),
+            .e_torch = cnf.alloc(area),
+            .s_torch = cnf.alloc(area),
+            .w_torch = cnf.alloc(area),
+
+            .input = cnf.alloc(area),
+            .output = cnf.alloc(area),
+
+            .input_map = cnf.alloc(opt.input_count * area),
+            .output_map = cnf.alloc(opt.output_count * area),
+
+            .segment = cnf.alloc(area * seg_bits),
+
+            .torch_on = cnf.alloc(states * area),
+            .block_on = cnf.alloc(states * area),
+            .dust_on = cnf.alloc(states * area),
+            .connected_on = cnf.alloc(states * area),
+
+            .strength = cnf.alloc(states * area * power_bits),
+        };
     }
+};
+
+fn encodeMain(
+    io: Io,
+    _: Allocator,
+    opt: *const Options,
+    path: []const u8,
+) !void {
+    const cwd = Io.Dir.cwd();
+
+    // Create a temporary file and writer to hold the CNF clauses
+
+    var temp_closed: bool = false;
+    const temp_path: []const u8 = "TEMP_CLAUSES.CNF";
+    const temp_file = try cwd.createFile(io, temp_path, .{});
+    errdefer if (!temp_closed) temp_file.close(io);
+    var temp_buffer: [64]u8 = undefined;
+    var temp_writer = temp_file.writer(io, &temp_buffer);
+    const temp = &temp_writer.interface;
+
+    // Run all of the functions that constrain the CNF
+
+    var cnf: Cnf = .init(temp);
+    defer cnf.deinit();
+
+    const vars: Variables = .init(opt, &cnf);
+
+    const function_name_list: []const []const u8 = &.{
+        "falseAndTrueBit",
+        "blockSingularity",
+        "torchDistinctness",
+        "torchBlockSupports",
+        "blockTorchConnection",
+        "torchDustConnection",
+        "blockDustConnection",
+        "inputCardinality",
+        "outputCardinality",
+        "dustRedirectionSources",
+        "dustConnection",
+        "inputBlockType",
+        "outputBlockType",
+        "inputMapCardinality",
+        "outputMapCardinality",
+        "inputOverlap",
+        "outputOverlap",
+        "cardinalConnectedOn",
+        "blockPowered",
+    };
+
+    inline for (function_name_list, 0..) |name, idx| {
+        const fmt_args = .{ idx + 1, function_name_list.len, name };
+        std.debug.print("{} / {} - {s}...\n", fmt_args);
+        try @field(@This(), name)(&cnf, &vars, opt);
+    }
+
+    try cnf.bittrue(vars.block.at(14));
+    try cnf.bittrue(vars.block.at(20));
+    try cnf.bittrue(vars.block.at(30));
+    try cnf.bittrue(vars.block.at(40));
+
+    // Open "real_file" (real output) and create buffered writer "real"
+
+    const real_file = try cwd.createFile(io, path, .{});
+    defer real_file.close(io);
+    var real_buffer: [64]u8 = undefined;
+    var real_writer = real_file.writer(io, &real_buffer);
+    const real = &real_writer.interface;
+
+    // Flush completed CNF clauses, close the temp file, and write the header
+
+    try cnf.flush();
+    try cnf.header(real);
+    temp_file.close(io);
+    temp_closed = true;
+
+    // Open the temp file for reading and stream it into the output file
+
+    const read_file = try cwd.openFile(io, temp_path, .{});
+    defer read_file.close(io);
+    var read_buffer: [64]u8 = undefined;
+    var temp_reader = temp_file.reader(io, &read_buffer);
+    const reader = &temp_reader.interface;
+    _ = try reader.streamRemaining(real);
+
+    // Flush output sent to the real file and delete the temporary file
+
+    try real.flush();
+    try cwd.deleteFile(io, temp_path);
 }
 
-fn decodeMain(io: Io, gpa: Allocator) !void {
+fn decodeMain(
+    io: Io,
+    gpa: Allocator,
+    opt: *const Options,
+    path: []const u8,
+) !void {
     var failing: Io.Writer = .failing;
     var cnf: Cnf = .init(&failing);
     defer cnf.deinit();
-    try initializeGlobals(&cnf);
 
-    var stdin_buffer: [4096]u8 = undefined;
-    const stdin_file = std.Io.File.stdin();
+    const vars: Variables = .init(opt, &cnf);
+    const area = opt.area();
+
+    var stdin_buffer: [64]u8 = undefined;
+    const cwd = std.Io.Dir.cwd();
+
+    const stdin_file = switch (std.mem.eql(u8, path, "-")) {
+        false => try cwd.openFile(io, path, .{}),
+        true => std.Io.File.stdin(),
+    };
+
+    defer stdin_file.close(io);
     var stdin_file_reader = stdin_file.reader(io, &stdin_buffer);
     const stdin = &stdin_file_reader.interface;
 
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [64]u8 = undefined;
     const stdout_file = std.Io.File.stdout();
     var stdout_file_writer = stdout_file.writer(io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
@@ -272,16 +400,32 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
     defer allocating.deinit();
     const line_store = &allocating.writer;
 
-    var block_is_air: [area]u1 = @splat(0);
-    var block_is_dust: [area]u1 = @splat(0);
-    var block_is_block: [area]u1 = @splat(0);
-
-    var block_is_input: [height]u1 = @splat(0);
-    var block_is_output: [height]u1 = @splat(0);
-
-    var block_is_left_torch: [area]u1 = @splat(0);
-    var block_is_right_torch: [area]u1 = @splat(0);
-    var block_is_standing_torch: [area]u1 = @splat(0);
+    const is_air: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_air);
+    const is_dust: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_dust);
+    const is_block: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_block);
+    const is_n_connect: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_n_connect);
+    const is_e_connect: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_e_connect);
+    const is_s_connect: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_s_connect);
+    const is_w_connect: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_w_connect);
+    const is_n_torch: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_n_torch);
+    const is_e_torch: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_e_torch);
+    const is_s_torch: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_s_torch);
+    const is_w_torch: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_w_torch);
+    const is_input: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_input);
+    const is_output: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_output);
 
     while (true) {
         allocating.clearRetainingCapacity();
@@ -299,28 +443,23 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
             const decoded = @abs(encoded);
 
             inline for (&.{
-                .{ &is_input, &block_is_input },
-                .{ &is_output, &block_is_output },
-            }) |list| {
-                for (0..height) |y| {
-                    if (decoded == list[0].at(y)) {
-                        list[1][y] = value;
-                        continue :outer;
-                    }
-                }
-            }
-
-            inline for (&.{
-                .{ &is_air, &block_is_air },
-                .{ &is_dust, &block_is_dust },
-                .{ &is_block, &block_is_block },
-                .{ &is_left_torch, &block_is_left_torch },
-                .{ &is_right_torch, &block_is_right_torch },
-                .{ &is_standing_torch, &block_is_standing_torch },
+                .{ is_air, vars.air },
+                .{ is_dust, vars.dust },
+                .{ is_block, vars.block },
+                .{ is_n_connect, vars.n_connect },
+                .{ is_e_connect, vars.e_connect },
+                .{ is_s_connect, vars.s_connect },
+                .{ is_w_connect, vars.w_connect },
+                .{ is_n_torch, vars.n_torch },
+                .{ is_e_torch, vars.e_torch },
+                .{ is_s_torch, vars.s_torch },
+                .{ is_w_torch, vars.w_torch },
+                .{ is_input, vars.input },
+                .{ is_output, vars.output },
             }) |list| {
                 for (0..area) |pos| {
-                    if (decoded == list[0].at(pos)) {
-                        list[1][pos] = value;
+                    if (decoded == list[1].at(pos)) {
+                        list[0][pos] = value;
                         continue :outer;
                     }
                 }
@@ -328,187 +467,128 @@ fn decodeMain(io: Io, gpa: Allocator) !void {
         }
     }
 
-    for (0..height) |y| {
+    for (0..opt.length) |z| {
         for (0..3) |sub_row| {
-            for (0..width) |x| {
-                for (0..3) |sub_col| {
-                    const pos = x + y * width;
+            for (0..opt.width) |x| {
+                const pos = x + z * opt.width;
+                var row: Display = unknown_display;
 
-                    var byte = unknown_display[sub_row][sub_col];
+                inline for (&.{
+                    .{ is_air, air_display },
+                    .{ is_block, block_display },
+                    .{ is_n_torch, n_torch_display },
+                    .{ is_e_torch, e_torch_display },
+                    .{ is_s_torch, s_torch_display },
+                    .{ is_w_torch, w_torch_display },
+                }) |list| if (list[0][pos] == 1) {
+                    row = list[1];
+                    break;
+                };
 
-                    inline for (&.{
-                        .{ &block_is_air, &air_display },
-                        .{ &block_is_dust, &dust_display },
-                        .{ &block_is_block, &block_display },
-                        .{ &block_is_left_torch, &left_torch_display },
-                        .{ &block_is_right_torch, &right_torch_display },
-                        .{ &block_is_standing_torch, &standing_torch_display },
-                    }) |list| {
-                        if (list[0][pos] == 1) {
-                            byte = list[1][sub_row][sub_col];
-                            break;
-                        }
-                    }
-
-                    // Priotize displaying input / output over redstone dust
-                    if (block_is_input[y] == 1 and x == 0) {
-                        byte = input_display[sub_row][sub_col];
-                    } else if (block_is_output[y] == 1 and x == width - 1) {
-                        byte = output_display[sub_row][sub_col];
-                    }
-
-                    try stdout.writeByte(byte);
+                if (is_dust[pos] == 1) {
+                    const n = is_n_connect[pos];
+                    const e = is_e_connect[pos];
+                    const s = is_s_connect[pos];
+                    const w = is_w_connect[pos];
+                    row = dustDisplay(n, e, s, w);
                 }
-                try stdout.writeAll("  ");
+
+                if (is_input[pos] == 1) row[0] = .blue;
+                if (is_output[pos] == 1) row[0] = .green;
+
+                try writeDisplayRow(row, stdout, sub_row);
             }
             try stdout.writeByte('\n');
         }
-        try stdout.writeByte('\n');
     }
 
-    try stdout.writeByte('\n');
     try stdout.flush();
 }
 
-const air_display: [3][3]u8 = .{
-    "   ".*,
-    " . ".*,
-    "   ".*,
-};
-const block_display: [3][3]u8 = .{
-    "###".*,
-    "###".*,
-    "###".*,
-};
-const dust_display: [3][3]u8 = .{
-    "   ".*,
-    "   ".*,
-    "===".*,
-};
-const standing_torch_display: [3][3]u8 = .{
-    " o ".*,
-    " | ".*,
-    " | ".*,
-};
-const left_torch_display: [3][3]u8 = .{
-    "o  ".*,
-    " \\ ".*,
-    "  \\".*,
-};
-const right_torch_display: [3][3]u8 = .{
-    "  o".*,
-    " / ".*,
-    "/  ".*,
-};
-const input_display: [3][3]u8 = .{
-    "+-+".*,
-    " | ".*,
-    "+-+".*,
-};
-const output_display: [3][3]u8 = .{
-    "/-\\".*,
-    "| |".*,
-    "\\-/".*,
-};
-const unknown_display: [3][3]u8 = .{
-    "? ?".*,
-    " ? ".*,
-    "? ?".*,
+const Color = enum {
+    red, // dust
+    blue, // input
+    green, // output
+    yellow, // torch
+    white, // block
+    gray, // air
+
+    const reset: []const u8 = "\x1B[0m";
+    fn code(self: @This()) []const u8 {
+        return switch (self) {
+            .red => "\x1B[91m",
+            .blue => "\x1B[94m",
+            .green => "\x1B[92m",
+            .yellow => "\x1B[93m",
+            .white => "\x1B[37m",
+            .gray => "\x1B[30m",
+        };
+    }
 };
 
-// Inputs are only at the beginning of a row
-fn isInputPosition(pos: u64) ?u64 {
-    if (pos % width != 0) return null;
-    return is_input.at(pos / width);
+const Display = struct { Color, [3][]const u8 };
+fn writeDisplayRow(self: Display, w: *Io.Writer, row: usize) !void {
+    if (row >= 3) unreachable;
+    try w.writeAll(self[0].code());
+    try w.writeAll(self[1][row]);
+    try w.writeAll(Color.reset);
 }
 
-// Outputs are only at the end of a row
-fn isOutputPosition(pos: u64) ?u64 {
-    if (pos % width != width - 1) return null;
-    return is_output.at(pos / width);
+fn dustDisplay(n: u4, e: u4, s: u4, w: u4) Display {
+    const pos = (n << 3) | (e << 2) | (s << 1) | w;
+    return .{ .red, switch (pos) {
+        0b0000 => .{ "      ", "  ██  ", "      " },
+        0b0001 => .{ "      ", "████  ", "      " },
+        0b0010 => .{ "      ", "  ██  ", "  ██  " },
+        0b0011 => .{ "      ", "████  ", "  ██  " },
+        0b0100 => .{ "      ", "  ████", "      " },
+        0b0101 => .{ "      ", "██████", "      " },
+        0b0110 => .{ "      ", "  ████", "  ██  " },
+        0b0111 => .{ "      ", "██████", "  ██  " },
+        0b1000 => .{ "  ██  ", "  ██  ", "      " },
+        0b1001 => .{ "  ██  ", "████  ", "      " },
+        0b1010 => .{ "  ██  ", "  ██  ", "  ██  " },
+        0b1011 => .{ "  ██  ", "████  ", "  ██  " },
+        0b1100 => .{ "  ██  ", "  ████", "      " },
+        0b1101 => .{ "  ██  ", "██████", "      " },
+        0b1110 => .{ "  ██  ", "  ████", "  ██  " },
+        0b1111 => .{ "  ██  ", "██████", "  ██  " },
+    } };
 }
 
-fn isBlockOffset(x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_block.at(sum_x + sum_y * width);
-}
+const air_display: Display = .{ .gray, .{ "      ", "  ..  ", "      " } };
+const block_display: Display = .{ .white, .{ "██████", "██████", "██████" } };
+const n_torch_display: Display = .{ .yellow, .{ "      ", "  𜷂𜷖  ", "  ▐▌  " } };
+const e_torch_display: Display = .{ .yellow, .{ "      ", "🬋🬋𜷂𜷖  ", "      " } };
+const s_torch_display: Display = .{ .yellow, .{ "  ▐▌  ", "  𜷂𜷖  ", "      " } };
+const w_torch_display: Display = .{ .yellow, .{ "      ", "  𜷂𜷖🬋🬋", "      " } };
+const unknown_display: Display = .{ .gray, .{ "? ? ? ", " ? ? ?", "? ? ? " } };
 
-fn isTorchOffset(x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_torch.at(sum_x + sum_y * width);
-}
-
-fn isDustOffset(x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_dust.at(sum_x + sum_y * width);
-}
-
-fn isDustPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_dust_powered[state].at(sum_x + sum_y * width);
-}
-
-fn isTorchOnOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_torch_on[state].at(sum_x + sum_y * width);
-}
-
-fn isWeaklyPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_weakly_powered[state].at(sum_x + sum_y * width);
-}
-
-fn isStronglyPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_strongly_powered[state].at(sum_x + sum_y * width);
-}
-
-fn isPoweredOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?u64 {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return is_powered[state].at(sum_x + sum_y * width);
-}
-
-fn signalStrengthOffset(state: u64, x: u64, x_off: i64, y: u64, y_off: i64) ?Bits {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return signal_strength[state][sum_x + sum_y * width];
-}
-
-fn segmentIdOffset(x: u64, x_off: i64, y: u64, y_off: i64) ?Bits {
-    const sum_x = x +% @as(u64, @bitCast(x_off));
-    const sum_y = y +% @as(u64, @bitCast(y_off));
-    if (sum_x >= width or sum_y >= height) return null;
-    return segment_id[sum_x + sum_y * width];
+// Initialize the false and true bit
+fn falseAndTrueBit(
+    cnf: *Cnf,
+    vars: *const Variables,
+    _: *const Options,
+) !void {
+    try cnf.bitfalse(vars.false_bit);
+    try cnf.bittrue(vars.true_bit);
 }
 
 // Prohibits air, dust, torch, and blocks from overlapping
-fn enforceSingleBlockType(cnf: *Cnf) !void {
-    for (0..area) |pos| {
+fn blockSingularity(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
         // Exactly one-of air, dust, torch, and block is true.
         // That means that at least one must be true, and no
         // pair of two of these can possibly be true.
 
-        const a = is_air.at(pos);
-        const b = is_dust.at(pos);
-        const c = is_torch.at(pos);
-        const d = is_block.at(pos);
+        const a = vars.air.at(pos);
+        const b = vars.dust.at(pos);
+        const c = vars.torch.at(pos);
+        const d = vars.block.at(pos);
 
         // At least one of A, B, C, D is true
         try cnf.clause(&.{ a, b, c, d }, &.{ 1, 1, 1, 1 });
@@ -524,1277 +604,727 @@ fn enforceSingleBlockType(cnf: *Cnf) !void {
 }
 
 // Prohibits torch variants from overlapping
-fn enforceSingleTorchType(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const a = is_torch.at(pos);
-        const b = is_left_torch.at(pos);
-        const c = is_right_torch.at(pos);
-        const d = is_standing_torch.at(pos);
+fn torchDistinctness(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const t = vars.torch.at(pos);
+        const n = vars.n_torch.at(pos);
+        const e = vars.e_torch.at(pos);
+        const s = vars.s_torch.at(pos);
+        const w = vars.w_torch.at(pos);
 
-        // If A is false, none of B, C, D can be true
-        try cnf.clause(&.{ a, b }, &.{ 1, 0 });
-        try cnf.clause(&.{ a, c }, &.{ 1, 0 });
-        try cnf.clause(&.{ a, d }, &.{ 1, 0 });
+        // n, e, s, w, imply t
+        try cnf.bitimp(n, t);
+        try cnf.bitimp(e, t);
+        try cnf.bitimp(s, t);
+        try cnf.bitimp(w, t);
 
-        // If A is true, one of B, C, D must be true
-        try cnf.clause(&.{ a, b, c, d }, &.{ 0, 1, 1, 1 });
+        // t implies n, e, s, OR w
+        try cnf.clause(
+            &.{ t, n, e, s, w },
+            &.{ 0, 1, 1, 1, 1 },
+        );
 
-        // At most one of B, C, D is true
-        try cnf.clause(&.{ b, c }, &.{ 0, 0 });
-        try cnf.clause(&.{ b, d }, &.{ 0, 0 });
-        try cnf.clause(&.{ c, d }, &.{ 0, 0 });
+        // no two directions can coexist
+        try cnf.clause(&.{ n, e }, &.{ 0, 0 });
+        try cnf.clause(&.{ n, s }, &.{ 0, 0 });
+        try cnf.clause(&.{ n, w }, &.{ 0, 0 });
+        try cnf.clause(&.{ e, s }, &.{ 0, 0 });
+        try cnf.clause(&.{ e, w }, &.{ 0, 0 });
+        try cnf.clause(&.{ s, w }, &.{ 0, 0 });
     }
 }
 
-// Prohibits dust from hanging in mid-air
-fn enforceDustOnBlock(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const x = pos % width;
-        const y = pos / width;
+// Make torches require supporting block
+fn torchBlockSupports(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
 
-        // Dust must have a supporting block, and
-        // dust is not possible on the very bottom.
-        if (isBlockOffset(x, 0, y, 1)) |block| {
-            try cnf.bitimp(is_dust.at(pos), block);
+        const n_torch = vars.n_torch.at(pos);
+        const e_torch = vars.e_torch.at(pos);
+        const s_torch = vars.s_torch.at(pos);
+        const w_torch = vars.w_torch.at(pos);
+
+        if (z < opt.length - 1) { // north facing torches
+            const block = vars.block.at(pos + opt.width);
+            try cnf.bitimp(n_torch, block);
         } else {
-            try cnf.bitfalse(is_dust.at(pos));
+            try cnf.bitfalse(n_torch);
         }
-    }
-}
 
-// All input and output blocks are also redstone dust
-fn enforceInputOutputDust(cnf: *Cnf) !void {
-    for (0..height) |y| {
-        const l_off = 0; // beginning of the row
-        const dust_l = is_dust.at(l_off + y * width);
-        try cnf.bitimp(is_input.at(y), dust_l);
-        const r_off = width - 1; // end of the row
-        const dust_r = is_dust.at(r_off + y * width);
-        try cnf.bitimp(is_output.at(y), dust_r);
-    }
-}
-
-// Torches cannot be hanging mid-air
-fn enforceTorchesOnBlocks(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const x = pos % width;
-        const y = pos / width;
-
-        // Left torches must have a supporting block, except
-        // for torches which would only be supported by out
-        // of bounds blocks, which are blocked.
-        if (isBlockOffset(x, 1, y, 0)) |block| {
-            try cnf.bitimp(is_left_torch.at(pos), block);
+        if (x > 0) { // east facing torches
+            const block = vars.block.at(pos - 1);
+            try cnf.bitimp(e_torch, block);
         } else {
-            try cnf.bitfalse(is_left_torch.at(pos));
+            try cnf.bitfalse(e_torch);
         }
 
-        // Right torches must have a supporting block, except
-        // for torches which would only be supported by out
-        // of bounds blocks, which are blocked.
-        if (isBlockOffset(x, -1, y, 0)) |block| {
-            try cnf.bitimp(is_right_torch.at(pos), block);
+        if (z > 0) { // south facing torches
+            const block = vars.block.at(pos - opt.width);
+            try cnf.bitimp(s_torch, block);
         } else {
-            try cnf.bitfalse(is_right_torch.at(pos));
+            try cnf.bitfalse(s_torch);
         }
 
-        // Standing torches must have a supporting block, except
-        // for torches which would only be supported by out
-        // of bounds blocks, which are blocked.
-        if (isBlockOffset(x, 0, y, 1)) |block| {
-            try cnf.bitimp(is_standing_torch.at(pos), block);
+        if (x < opt.width - 1) { // west facing torches
+            const block = vars.block.at(pos + 1);
+            try cnf.bitimp(w_torch, block);
         } else {
-            try cnf.bitfalse(is_standing_torch.at(pos));
+            try cnf.bitfalse(w_torch);
         }
     }
 }
 
-// forces specific inputs and outputs to be a general input or output
-fn enforceInputOutputMapImplication(cnf: *Cnf) !void {
-    // Specific inputs are a general input
-    for (0..height) |y|
-        for (input_map) |input|
-            try cnf.bitimp(input.at(y), is_input.at(y));
+// make blocks require cardinal connected torch
+// OR act as output
+fn blockTorchConnection(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
 
-    for (0..height) |y| {
-        // Either the current block is not an input
-        try cnf.clausePart(is_input.at(y), 0);
-        for (input_map) |input|
-            // Or there is a block that is a specific input
-            try cnf.clausePart(input.at(y), 1);
-        // general inputs require at least one specific input
-        try cnf.clauseEnd();
-    }
+        // There is either no block at this position
+        try cnf.clausePart(vars.block.at(pos), 0);
 
-    // Specific outputs are a general output
-    for (0..height) |y|
-        for (output_map) |output|
-            try cnf.bitimp(output.at(y), is_output.at(y));
-
-    for (0..height) |y| {
-        // Either the current block is not an output
-        try cnf.clausePart(is_output.at(y), 0);
-        for (output_map) |output|
-            // Or there is a block that is a specific output
-            try cnf.clausePart(output.at(y), 1);
-        // general outputs require at least one specific output
-        try cnf.clauseEnd();
-    }
-}
-
-// Constrain the sides to only have input / output stuff
-fn constrainInputOutputSideBlocks(cnf: *Cnf) !void {
-    for (0..height) |y| {
-        const pos = y * width;
-        // If the block is dust, it must be an input
-        try cnf.bitimp(is_dust.at(pos), is_input.at(y));
-    }
-
-    for (0..height) |y| {
-        const pos = y * width + width - 1;
-        // If the block is dust, it must be an output
-        try cnf.bitimp(is_dust.at(pos), is_output.at(y));
-    }
-
-    // No block exists at the top left
-    try cnf.bitfalse(is_block.at(0));
-    // No block exists at the top right
-    try cnf.bitfalse(is_block.at(width - 1));
-
-    for (1..height) |y| {
-        // Blocks must have dust above them on the input side
-        const block_input = is_block.at(y * width);
-        const dust_input = is_dust.at(y * width - width);
-        try cnf.bitimp(block_input, dust_input);
-        // Blocks must have dust above them on the output side
-        const block_output = is_block.at(y * width + width - 1);
-        const dust_output = is_dust.at(y * width - 1);
-        try cnf.bitimp(block_output, dust_output);
-    }
-
-    // For every state, if there is a torch above an input redstone dust, the
-    // torch must be on if the dust is on, otherwise the torch must be off.
-    // This prevents the torch from incorrectly powering the input from above.
-
-    for (0..states) |state| {
-        for (1..height) |y| {
-            const dust_pos = y * width;
-            const torch_pos = (y - 1) * width;
-
-            try cnf.clause(&.{
-                // either there is **NOT** a torch above
-                is_torch.at(torch_pos),
-                // OR there is **NOT** an input below it
-                is_input.at(y),
-                // OR the torch **IS** powered on
-                is_torch_on[state].at(torch_pos),
-                // OR the dust is **NOT** powered on
-                is_dust_powered[state].at(dust_pos),
-            }, &.{ 0, 0, 1, 0 });
-
-            try cnf.clause(&.{
-                // either there is **NOT** a torch above
-                is_torch.at(torch_pos),
-                // OR there is **NOT** an input below it
-                is_input.at(y),
-                // OR the torch is **NOT** powered on
-                is_torch_on[state].at(torch_pos),
-                // OR the dust **IS** powered on
-                is_dust_powered[state].at(dust_pos),
-            }, &.{ 0, 0, 0, 1 });
+        if (opt.allow_block_output) {
+            // OR it could be that the block is an output
+            try cnf.clausePart(vars.output.at(pos), 1);
         }
-    }
 
-    // For every state, if there is a torch two blocks below an input redstone
-    // dust, the torch must be powered if the torch is powered, or off if off.
-    // This prevents the torch from incorrectly powering the input from below.
+        // OR there is a north-facing torch here
+        if (z > 0)
+            try cnf.clausePart(vars.n_torch.at(pos - opt.width), 1);
+        // OR there is a east-facing torch here
+        if (x < opt.width - 1)
+            try cnf.clausePart(vars.e_torch.at(pos + 1), 1);
+        // OR there is a south-facing torch here
+        if (z < opt.length - 1)
+            try cnf.clausePart(vars.s_torch.at(pos + opt.width), 1);
+        // OR there is a west-facing torch here
+        if (x > 0)
+            try cnf.clausePart(vars.w_torch.at(pos - 1), 1);
 
-    for (0..states) |state| {
-        for (2..height) |y| {
-            const torch_pos = y * width;
-            const dust_pos = (y - 2) * width;
-
-            try cnf.clause(&.{
-                // either there is **NOT** a torch below
-                is_torch.at(torch_pos),
-                // OR there is **NOT** an input above it
-                is_input.at(y - 2),
-                // OR the torch **IS** powered on
-                is_torch_on[state].at(torch_pos),
-                // OR the dust is **NOT** powered on
-                is_dust_powered[state].at(dust_pos),
-            }, &.{ 0, 0, 1, 0 });
-
-            try cnf.clause(&.{
-                // either there is **NOT** a torch below
-                is_torch.at(torch_pos),
-                // OR there is **NOT** an input above it
-                is_input.at(y - 2),
-                // OR the torch is **NOT** powered on
-                is_torch_on[state].at(torch_pos),
-                // OR the dust **IS** powered on
-                is_dust_powered[state].at(dust_pos),
-            }, &.{ 0, 0, 0, 1 });
-        }
-    }
-}
-
-// Constrain the inputs and outputs to maintain truth table ordering
-fn constrainInputOutputOrdering(cnf: *Cnf) !void {
-    // greater inputs are above lesser inputs
-    if (enforce_input_ordering) {
-        for (0..height) |y_hi| for (0..y_hi) |y_lo| {
-            for (0..inputs) |x_gt| for (0..x_gt) |x_lt| {
-                const a = input_map[x_gt].at(y_hi);
-                const b = input_map[x_lt].at(y_lo);
-                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
-            };
-        };
-    }
-
-    // greater outputs are above lesser outputs
-    if (enforce_output_ordering) {
-        for (0..height) |y_hi| for (0..y_hi) |y_lo| {
-            for (0..outputs) |x_gt| for (0..x_gt) |x_lt| {
-                const a = output_map[x_gt].at(y_hi);
-                const b = output_map[x_lt].at(y_lo);
-                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
-            };
-        };
-    }
-}
-
-// forces the number of inputs and outputs to be one
-fn enforceInputOutputCardinality(cnf: *Cnf) !void {
-    for (0..height) |lhs| {
-        for (0..lhs) |rhs| {
-            // No two blocks map to the same input
-            for (input_map) |input| try cnf.clause(
-                &.{ input.at(lhs), input.at(rhs) },
-                &.{ 0, 0 },
-            );
-
-            // No two blocks map to the same output
-            for (output_map) |output| try cnf.clause(
-                &.{ output.at(lhs), output.at(rhs) },
-                &.{ 0, 0 },
-            );
-        }
-    }
-
-    for (input_map) |input| {
-        // At least one block is each input
-        for (0..height) |y|
-            try cnf.clausePart(input.at(y), 1);
-        try cnf.clauseEnd();
-    }
-
-    for (output_map) |output| {
-        // At least one block is each output
-        for (0..height) |y|
-            try cnf.clausePart(output.at(y), 1);
+        // Blocks imply one connected torch to it's sides,
+        // or it could be the case that it is an output.
         try cnf.clauseEnd();
     }
 }
 
-// constrains the value of specific input blocks based on the state
-fn constrainSpecificInputDustValue(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (input_map, 0..) |input, idx| {
-            for (0..height) |y| {
-                const inp = input.at(y);
-                const top = max_power - 1;
-                const sig = signal_strength[state][y * width];
-                switch (@as(u1, @truncate(state >> @intCast(idx)))) {
-                    // On specific 0, input IMPLIES zero signal strength
-                    0 => try cnf.clause(&.{ inp, sig.at(0) }, &.{ 0, 0 }),
-                    // On specific 1, input IMPLIES max signal strength
-                    1 => try cnf.clause(&.{ inp, sig.at(top) }, &.{ 0, 1 }),
-                }
-            }
+// make torches require cardinal dust
+// OR act as an output
+fn torchDustConnection(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
+
+        // There is either no torch at this position
+        try cnf.clausePart(vars.torch.at(pos), 0);
+
+        if (opt.allow_torch_output) {
+            // OR it could be that the block is an output
+            try cnf.clausePart(vars.output.at(pos), 1);
         }
+
+        // OR there is a north-relative dust here
+        if (z > 0)
+            try cnf.clausePart(vars.dust.at(pos - opt.width), 1);
+        // OR there is a east-relative dust here
+        if (x < opt.width - 1)
+            try cnf.clausePart(vars.dust.at(pos + 1), 1);
+        // OR there is a south-relative dust here
+        if (z < opt.length - 1)
+            try cnf.clausePart(vars.dust.at(pos + opt.width), 1);
+        // OR there is a west-relative dust here
+        if (x > 0)
+            try cnf.clausePart(vars.dust.at(pos - 1), 1);
+
+        // Torches imply one connected dust to it's sides,
+        // or it could be the case that it is an output.
+        try cnf.clauseEnd();
     }
 }
 
-// constrains the value of specific output blocks based on the truth table
-fn constrainSpecificOutputDustValue(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (output_map, 0..) |output, idx| {
-            for (0..height) |y| {
-                const out = output.at(y);
-                const pos = y * width + width - 1;
-                const pow = is_dust_powered[state].at(pos);
-                for (truth[idx]) |row| {
-                    // Compute which row we are on
-                    var row_number: u64 = 0;
-                    for (row[0], 0..) |bit, off| {
-                        const shift: u6 = @intCast(inputs - 1 - off);
-                        row_number |= @as(u64, bit) << shift;
-                    }
+// make blocks require cardinal connected dust
+// OR act as an input
+fn blockDustConnection(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
 
-                    // Constrain the output if we are on this row
-                    if (state == row_number) switch (row[1]) {
-                        // On specific 0, out IMPLIES unpowered
-                        0 => try cnf.clause(&.{ out, pow }, &.{ 0, 0 }),
-                        // On specific 1, out IMPLIES powered
-                        1 => try cnf.clause(&.{ out, pow }, &.{ 0, 1 }),
-                    };
-                }
-            }
-        }
+        // There is either no block at this position
+        try cnf.clausePart(vars.block.at(pos), 0);
+
+        if (opt.allow_weak_powered_block_input)
+            // OR it could be that the block is an input
+            try cnf.clausePart(vars.input.at(pos), 1);
+
+        // OR there is a north-relative connected dust here
+        if (z > 0)
+            try cnf.clausePart(vars.s_connect.at(pos - opt.width), 1);
+        // OR there is a east-relative connected dust here
+        if (x < opt.width - 1)
+            try cnf.clausePart(vars.w_connect.at(pos + 1), 1);
+        // OR there is a south-relative connected dust here
+        if (z < opt.length - 1)
+            try cnf.clausePart(vars.n_connect.at(pos + opt.width), 1);
+        // OR there is a west-relative connected dust here
+        if (x > 0)
+            try cnf.clausePart(vars.e_connect.at(pos - 1), 1);
+
+        // Blocks imply one connected dust to it's sides,
+        // or it could be the case that it is an input.
+        try cnf.clauseEnd();
     }
 }
 
-// Blocks are weakly powered if adjacent to a powered dust block
-fn enforceWeakPowering(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
-
-            // Whether the right dust (if it exists) is powered
-            const r = isDustPoweredOffset(state, x, 1, y, 0);
-            // Whether the left dust (if it exists) is powered
-            const l = isDustPoweredOffset(state, x, -1, y, 0);
-            // Whether the top dust (if it exists) is powered
-            const t = isDustPoweredOffset(state, x, 0, y, -1);
-            // Whether or not the current block is weakly powered
-            const p = is_weakly_powered[state].at(pos);
-            // Whether or not the current block is indeed a block
-            const b = is_block.at(pos);
-
-            // right dust and block implies the block is powered
-            if (r) |dust| try cnf.clause(&.{ dust, b, p }, &.{ 0, 0, 1 });
-            // left dust and block implies the block is powered
-            if (l) |dust| try cnf.clause(&.{ dust, b, p }, &.{ 0, 0, 1 });
-            // top dust and block implies the block is powered
-            if (t) |dust| try cnf.clause(&.{ dust, b, p }, &.{ 0, 0, 1 });
-
-            // It is either the case that the block is not powered
-            try cnf.clausePart(p, 0);
-            // Or it is the case that the block is not a block
-            try cnf.clausePart(b, 0);
-            // Or it is the case that the right dust is powered
-            if (r) |dust| try cnf.clausePart(dust, 1);
-            // Or it is the case that the left dust is powered
-            if (l) |dust| try cnf.clausePart(dust, 1);
-            // Or it is the case that the top dust is powered
-            if (t) |dust| try cnf.clausePart(dust, 1);
-            // If all the dust is off, the block is not powered
+// restrict the number of inputs
+fn inputCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    switch (opt.input_count) {
+        0 => unreachable, // checked in Options.init()
+        1 => {
+            // At least one of the blocks is an input
+            for (0..opt.area()) |pos|
+                try cnf.clausePart(vars.input.at(pos), 1);
             try cnf.clauseEnd();
 
-            // If the block is powered, it must be a block
-            try cnf.bitimp(p, b);
-        }
-    }
-}
-
-// Blocks are strongly powered if above a powered torch
-fn enforceStrongPowering(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
-
-            const p = is_strongly_powered[state].at(pos);
-            const b = is_block.at(pos);
-
-            if (isTorchOnOffset(state, x, 0, y, 1)) |t| {
-                // Must be powered if both a block and torch below
-                try cnf.bitand(b, t, p);
-            } else {
-                // Even if it's a block, it's not strongly powered
-                try cnf.bitfalse(p);
-            }
-        }
-    }
-}
-
-// dust is powered if and only if it's signal strength is not zero
-fn enforceDustIsPowered(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const sig_strength = signal_strength[state][pos];
-            const dust_powered = is_dust_powered[state].at(pos);
-            const not_zero_sig = sig_strength.at(0); // unary :)
-            // Power is equal to the lowest unary bit, sweet!
-            try cnf.biteql(dust_powered, not_zero_sig);
-        }
-    }
-}
-
-// non-zero signal strengths only exist for dust
-fn enforceDustSignalExistence(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const sig_strength = signal_strength[state][pos];
-            const not_zero = sig_strength.at(0); // unary :)
-            // It must be dust if it has non-zero signal strength
-            try cnf.bitimp(not_zero, is_dust.at(pos));
-        }
-    }
-}
-
-// Blocks are powered in general if either weakly or strongly powered
-fn enforceGeneralPower(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const w = is_weakly_powered[state].at(pos);
-            const s = is_strongly_powered[state].at(pos);
-            const p = is_powered[state].at(pos);
-            // powered if either weak or strong
-            try cnf.bitor(w, s, p);
-        }
-    }
-}
-
-// torches are on if and only if their supporting block is not powered
-fn enforceTorchPower(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
-
-            const r_pow_maybe = isPoweredOffset(state, x, 1, y, 0);
-            const l_pow_maybe = isPoweredOffset(state, x, -1, y, 0);
-            const b_pow_maybe = isPoweredOffset(state, x, 0, y, 1);
-
-            const torch_on = is_torch_on[state].at(pos);
-            const s_torch = is_standing_torch.at(pos);
-            const r_torch = is_right_torch.at(pos);
-            const l_torch = is_left_torch.at(pos);
-            const torch = is_torch.at(pos);
-
-            // b_pow l_pow r_pow s_torch r_torch l_torch torch torch_on
-            //     .     .     .       .       .       .     0        0
-            //     .     .     0       .       .       1     .        1
-            //     .     .     1       .       .       1     .        0
-            //     .     0     .       .       1       .     .        1
-            //     .     1     .       .       1       .     .        0
-            //     0     .     .       1       .       .     .        1
-            //     1     .     .       1       .       .     .        0
-
-            // If the torch is on, it must be a torch
-            // OR: If not a torch, the torch is not on
-            try cnf.bitimp(torch_on, torch);
-
-            if (r_pow_maybe) |r_pow| {
-                // (NOT r_pow AND l_torch) IMPLIES torch_on
-                try cnf.clause(&.{ r_pow, l_torch, torch_on }, &.{ 1, 0, 1 });
-                // (r_pow AND l_torch) IMPLIES NOT torch_on
-                try cnf.clause(&.{ r_pow, l_torch, torch_on }, &.{ 0, 0, 0 });
-            } else {
-                // This case isn't possible because we can't have unsupported
-                // torches, so we don't need to say l_torch implies torch_on.
-            }
-
-            if (l_pow_maybe) |l_pow| {
-                // (NOT l_pow AND r_torch) IMPLIES torch_on
-                try cnf.clause(&.{ l_pow, r_torch, torch_on }, &.{ 1, 0, 1 });
-                // (l_pow and r_torch) IMPLIES NOT torch_on
-                try cnf.clause(&.{ l_pow, r_torch, torch_on }, &.{ 0, 0, 0 });
-            } else {
-                // This case isn't possible because we can't have unsupported
-                // torches, so we don't need to say r_torch implies torch_on.
-            }
-
-            if (b_pow_maybe) |b_pow| {
-                // (NOT b_pow AND s_torch) IMPLIES torch_on
-                try cnf.clause(&.{ b_pow, s_torch, torch_on }, &.{ 1, 0, 1 });
-                // (b_pow AND s_torch) IMPLIES NOT torch_on
-                try cnf.clause(&.{ b_pow, s_torch, torch_on }, &.{ 0, 0, 0 });
-            } else {
-                // This case isn't possible because we can't have unsupported
-                // torches, so we don't need to say s_torch implies torch_on.
-            }
-        }
-    }
-}
-
-// Signal strength can only be propagated if the block is dust and not input
-fn enforceCanPropagate(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const dust = is_dust.at(pos);
-            const prop = can_propagate[state].at(pos);
-
-            if (isInputPosition(pos)) |input| {
-                // propagation implies that it is dust
-                try cnf.bitimp(prop, dust);
-                // it can't propagate and also be an input
-                try cnf.clause(&.{ prop, input }, &.{ 0, 0 });
-                // if dust and not an input, it must be able to propagate
-                try cnf.clause(&.{ prop, input, dust }, &.{ 1, 1, 0 });
-            } else {
-                // We know this position is not an input; prop = dust
-                try cnf.biteql(prop, dust);
-            }
-        }
-    }
-}
-
-// Signal strength can decay if not directly powered and if it can propagate
-fn enforceCanDecay(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const direct = is_directly_powered[state].at(pos);
-            const prop = can_propagate[state].at(pos);
-            const decay = can_decay[state].at(pos);
-
-            // decay implies that signal can be propagated
-            try cnf.bitimp(decay, prop);
-            // it can't decay and also be directly powered
-            try cnf.clause(&.{ decay, direct }, &.{ 0, 0 });
-            // if propagatable and not directly powered, it must decay
-            try cnf.clause(&.{ prop, direct, decay }, &.{ 0, 1, 1 });
-        }
-    }
-}
-
-// Set the supplyable signal strengths of nearby blocks depending on the
-// signal strength of nearby blocks, factoring in impediments like blocks.
-fn constrainSupplyableSignal(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
-
-            const t_block_maybe = isBlockOffset(x, 0, y, -1);
-            const l_block_maybe = isBlockOffset(x, -1, y, 0);
-            const r_block_maybe = isBlockOffset(x, 1, y, 0);
-
-            const tl_sig_maybe = signalStrengthOffset(state, x, -1, y, -1);
-            const bl_sig_maybe = signalStrengthOffset(state, x, -1, y, 1);
-            const tr_sig_maybe = signalStrengthOffset(state, x, 1, y, -1);
-            const br_sig_maybe = signalStrengthOffset(state, x, 1, y, 1);
-
-            const tl_sup = supply_top_left[state][pos];
-            const bl_sup = supply_bottom_left[state][pos];
-            const tr_sup = supply_top_right[state][pos];
-            const br_sup = supply_bottom_right[state][pos];
-
-            for (0..max_power) |off| {
-                if (tl_sig_maybe) |tl_sig| {
-                    // SUP = SIG AND NOT BLOCK AND DUST
-                    const sup = tl_sup.at(off);
-                    const sig = tl_sig.at(off);
-                    const blk = t_block_maybe.?;
-                    const dst = is_dust.at(pos);
-
-                    // supply implies dust
-                    try cnf.bitimp(sup, dst);
-                    // supply implies signal strength
-                    try cnf.bitimp(sup, sig);
-                    // blocked connection implies no supply
-                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
-                    // signal and no block and dust imply supply
-                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
-                } else {
-                    // Supplyable signal strength from the top left is zero
-                    try cnf.bitfalse(tl_sup.at(off));
-                }
-
-                if (bl_sig_maybe) |bl_sig| {
-                    // SUP = SIG AND NOT BLOCK AND DUST
-                    const sup = bl_sup.at(off);
-                    const sig = bl_sig.at(off);
-                    const blk = l_block_maybe.?;
-                    const dst = is_dust.at(pos);
-
-                    // supply implies dust
-                    try cnf.bitimp(sup, dst);
-                    // supply implies signal strength
-                    try cnf.bitimp(sup, sig);
-                    // blocked connection implies no supply
-                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
-                    // signal and no block and dust imply supply
-                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
-                } else {
-                    // Supplyable signal strength from the bottom left is zero
-                    try cnf.bitfalse(bl_sup.at(off));
-                }
-
-                if (tr_sig_maybe) |tr_sig| {
-                    // SUP = SIG AND NOT BLOCK AND DUST
-                    const sup = tr_sup.at(off);
-                    const sig = tr_sig.at(off);
-                    const blk = t_block_maybe.?;
-                    const dst = is_dust.at(pos);
-
-                    // supply implies dust
-                    try cnf.bitimp(sup, dst);
-                    // supply implies signal strength
-                    try cnf.bitimp(sup, sig);
-                    // blocked connection implies no supply
-                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
-                    // signal and no block and dust imply supply
-                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
-                } else {
-                    // Supplyable signal strength from the top right is zero
-                    try cnf.bitfalse(tr_sup.at(off));
-                }
-
-                if (br_sig_maybe) |br_sig| {
-                    // SUP = SIG AND NOT BLOCK AND DUST
-                    const sup = br_sup.at(off);
-                    const sig = br_sig.at(off);
-                    const blk = r_block_maybe.?;
-                    const dst = is_dust.at(pos);
-
-                    // supply implies dust
-                    try cnf.bitimp(sup, dst);
-                    // supply implies signal strength
-                    try cnf.bitimp(sup, sig);
-                    // blocked connection implies no supply
-                    try cnf.clause(&.{ blk, sup }, &.{ 0, 0 });
-                    // signal and no block and dust imply supply
-                    try cnf.clause(&.{ sig, blk, dst, sup }, &.{ 0, 1, 0, 1 });
-                } else {
-                    // Supplyable signal strength from the bottom right is zero
-                    try cnf.bitfalse(br_sup.at(off));
+            // At most one of the blocks is an input
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.input.at(lhs);
+                    const b = vars.input.at(rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
                 }
             }
+        },
+        else => {
+            // Count the number bits and constrain to the input_count
+            const cardinality = try cnf.unaryTotalize(vars.input);
+            try cnf.unaryConstrainEQVal(cardinality, opt.input_count);
+        },
+    }
+}
+
+// restrict the number of outputs
+fn outputCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    switch (opt.output_count) {
+        0 => unreachable, // checked in Options.init()
+        1 => {
+            // At least one of the blocks is an output
+            for (0..opt.area()) |pos|
+                try cnf.clausePart(vars.output.at(pos), 1);
+            try cnf.clauseEnd();
+
+            // At most one of the blocks is an output
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.output.at(lhs);
+                    const b = vars.output.at(rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the output_count
+            const cardinality = try cnf.unaryTotalize(vars.output);
+            try cnf.unaryConstrainEQVal(cardinality, opt.output_count);
+        },
+    }
+}
+
+// constrain cardinal dust redirection sources
+fn dustRedirectionSources(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
+
+        const d = vars.dust.at(pos);
+        const i = vars.input.at(pos);
+        const o = vars.output.at(pos);
+        const n = vars.n_redirect.at(pos);
+        const e = vars.e_redirect.at(pos);
+        const s = vars.s_redirect.at(pos);
+        const w = vars.w_redirect.at(pos);
+
+        // (not dust) -> not redirected northward
+        try cnf.clause(&.{ d, n }, &.{ 1, 0 });
+        // (not dust) -> not redirected eastward
+        try cnf.clause(&.{ d, e }, &.{ 1, 0 });
+        // (not dust) -> not redirected southward
+        try cnf.clause(&.{ d, s }, &.{ 1, 0 });
+        // (not dust) -> not redirected westward
+        try cnf.clause(&.{ d, w }, &.{ 1, 0 });
+
+        if (z > 0) { // north redirections
+            try centerRedirect(cnf, vars, d, pos - opt.width, n);
+        } else {
+            try edgeRedirect(cnf, opt, d, i, o, n);
+        }
+
+        if (x < opt.width - 1) { // east redirections
+            try centerRedirect(cnf, vars, d, pos + 1, e);
+        } else {
+            try edgeRedirect(cnf, opt, d, i, o, e);
+        }
+
+        if (z < opt.length - 1) { // south redirections
+            try centerRedirect(cnf, vars, d, pos + opt.width, s);
+        } else {
+            try edgeRedirect(cnf, opt, d, i, o, s);
+        }
+
+        if (x > 0) { // west redirections
+            try centerRedirect(cnf, vars, d, pos - 1, w);
+        } else {
+            try edgeRedirect(cnf, opt, d, i, o, w);
         }
     }
 }
 
-// Set the maximum neighboring signal strength depending on the signal strength
-// of neighboring blocks, and whether the dust would connect (no impediments).
-fn constrainMaxNeighborStrength(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
+fn centerRedirect(
+    cnf: *Cnf,
+    vars: *const Variables,
+    d: u64, // whether this is dust
+    c_pos: u64, // cardinal position
+    r: u64, // whether this is redirected
+) !void {
+    // cardinal torch
+    const c_t = vars.torch.at(c_pos);
+    // cardinal dust
+    const c_d = vars.dust.at(c_pos);
 
-            const tl_sup = supply_top_left[state][pos];
-            const bl_sup = supply_bottom_left[state][pos];
-            const tr_sup = supply_top_right[state][pos];
-            const br_sup = supply_bottom_right[state][pos];
+    // (not cardinal torch and not cardinal dust) -> not redirected
+    try cnf.clause(&.{ c_t, c_d, r }, &.{ 1, 1, 0 });
+    // (dust and cardinal torch) -> redirected
+    try cnf.clause(&.{ d, c_t, r }, &.{ 0, 0, 1 });
+    // (dust and cardinal dust) -> redirected
+    try cnf.clause(&.{ d, c_d, r }, &.{ 0, 0, 1 });
+}
 
-            const l_sup_maybe = signalStrengthOffset(state, x, -1, y, 0);
-            const r_sup_maybe = signalStrengthOffset(state, x, 1, y, 0);
+fn edgeRedirect(
+    cnf: *Cnf,
+    opt: *const Options,
+    d: u64, // whether this is dust
+    i: u64, // whether this is an input
+    o: u64, // whether this is an output
+    r: u64, // whether this is redirected
+) !void {
+    const redirect_input = opt.redirect_input_edge_dust;
+    const redirect_output = opt.redirect_output_edge_dust;
+    const redirect_both = redirect_input and redirect_output;
 
-            const max_signal = max_signal_strength[state][pos];
+    if (redirect_input) {
+        // (dust and input) -> redirected
+        try cnf.clause(&.{ d, i, r }, &.{ 0, 0, 1 });
+    }
 
-            for (0..max_power) |off| {
-                const max = max_signal.at(off);
+    if (redirect_output) {
+        // (dust and output) -> redirected
+        try cnf.clause(&.{ d, o, r }, &.{ 0, 0, 1 });
+    }
 
-                // power from the top left implies at least this much power
-                try cnf.bitimp(tl_sup.at(off), max);
-                // power from the bottom left implies at least this much power
-                try cnf.bitimp(bl_sup.at(off), max);
-                // power from the top right implies at least this much power
-                try cnf.bitimp(tr_sup.at(off), max);
-                // power from the bottom right implies at least this much power
-                try cnf.bitimp(br_sup.at(off), max);
-                // power from the left implies at least this much power
-                if (l_sup_maybe) |l_sup| try cnf.bitimp(l_sup.at(off), max);
-                // power from the right implies at least this much power
-                if (r_sup_maybe) |r_sup| try cnf.bitimp(r_sup.at(off), max);
+    if (redirect_both) {
+        // (not input and not output) -> not redirected
+        try cnf.clause(&.{ i, o, r }, &.{ 1, 1, 0 });
+    } else if (redirect_input) {
+        // (not input) -> not redirected
+        try cnf.clause(&.{ i, r }, &.{ 1, 0 });
+    } else if (redirect_output) {
+        // (not output) -> not redirected
+        try cnf.clause(&.{ o, r }, &.{ 1, 0 });
+    } else {
+        // not redirected
+        try cnf.bitfalse(r);
+    }
+}
 
-                // Either the power is less than this level
-                try cnf.clausePart(max, 0);
-                // Or the top left has at least this much power
-                try cnf.clausePart(tl_sup.at(off), 1);
-                // Or the bottom left has at least this much power
-                try cnf.clausePart(bl_sup.at(off), 1);
-                // Or the top right has at least this much power
-                try cnf.clausePart(tr_sup.at(off), 1);
-                // Or the bottom right has at least this much power
-                try cnf.clausePart(br_sup.at(off), 1);
-                // Or the left has at least this much power
-                if (l_sup_maybe) |l_sup| try cnf.clausePart(l_sup.at(off), 1);
-                // Or the right has at least this much power
-                if (r_sup_maybe) |r_sup| try cnf.clausePart(r_sup.at(off), 1);
-                // The power is at most the power of the supply
-                try cnf.clauseEnd();
+// constrain connections of dust blocks
+fn dustConnection(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const d = vars.dust.at(pos);
+
+        const n_r = vars.n_redirect.at(pos);
+        const e_r = vars.e_redirect.at(pos);
+        const s_r = vars.s_redirect.at(pos);
+        const w_r = vars.w_redirect.at(pos);
+
+        const n_c = vars.n_connect.at(pos);
+        const e_c = vars.e_connect.at(pos);
+        const s_c = vars.s_connect.at(pos);
+        const w_c = vars.w_connect.at(pos);
+
+        // (not d) -> not n_c
+        try cnf.clause(&.{ d, n_c }, &.{ 1, 0 });
+        // (not d) -> not e_c
+        try cnf.clause(&.{ d, e_c }, &.{ 1, 0 });
+        // (not d) -> not s_c
+        try cnf.clause(&.{ d, s_c }, &.{ 1, 0 });
+        // (not d) -> not w_c
+        try cnf.clause(&.{ d, w_c }, &.{ 1, 0 });
+
+        // (n_r) -> n_c
+        try cnf.clause(&.{ n_r, n_c }, &.{ 0, 1 });
+        // (e_r) -> e_c
+        try cnf.clause(&.{ e_r, e_c }, &.{ 0, 1 });
+        // (s_r) -> s_c
+        try cnf.clause(&.{ s_r, s_c }, &.{ 0, 1 });
+        // (w_r) -> w_c
+        try cnf.clause(&.{ w_r, w_c }, &.{ 0, 1 });
+
+        // (e_r and not n_r) -> not n_c
+        try cnf.clause(&.{ e_r, n_r, n_c }, &.{ 0, 1, 0 });
+        // (n_r and not e_r) -> not e_c
+        try cnf.clause(&.{ n_r, e_r, e_c }, &.{ 0, 1, 0 });
+        // (e_r and not s_r) -> not s_c
+        try cnf.clause(&.{ e_r, s_r, s_c }, &.{ 0, 1, 0 });
+        // (s_r and not w_r) -> not w_c
+        try cnf.clause(&.{ s_r, w_r, w_c }, &.{ 0, 1, 0 });
+
+        // (not n_r and not e_r and w_r) -> not n_c
+        try cnf.clause(&.{ n_r, e_r, w_r, n_c }, &.{ 1, 1, 0, 0 });
+        // (not n_r and not e_r and s_r) -> not e_c
+        try cnf.clause(&.{ n_r, e_r, s_r, e_c }, &.{ 1, 1, 0, 0 });
+        // (not e_r and not s_r and w_r) -> not s_c
+        try cnf.clause(&.{ e_r, s_r, w_r, s_c }, &.{ 1, 1, 0, 0 });
+        // (not s_r and not w_r and n_r) -> not w_c
+        try cnf.clause(&.{ s_r, w_r, n_r, w_c }, &.{ 1, 1, 0, 0 });
+
+        // (not n_r and not e_r and s_r and not w_r) -> n_c
+        try cnf.clause(&.{ n_r, e_r, s_r, w_r, n_c }, &.{ 1, 1, 0, 1, 1 });
+        // (not n_r and not e_r and not s_r and w_r) -> e_c
+        try cnf.clause(&.{ n_r, e_r, s_r, w_r, e_c }, &.{ 1, 1, 1, 0, 1 });
+        // (n_r and not e_r and not s_r and not w_r) -> s_c
+        try cnf.clause(&.{ n_r, e_r, s_r, w_r, s_c }, &.{ 0, 1, 1, 1, 1 });
+        // (not n_r and e_r and not s_r and not w_r) -> w_c
+        try cnf.clause(&.{ n_r, e_r, s_r, w_r, w_c }, &.{ 1, 0, 1, 1, 1 });
+
+        // This is the only place we need to depend on and include dust in the
+        // equation, as this is the only place where we would be setting a
+        // connection to true if none of the redirections are true - everything
+        // else constrains to 0, or already depends on a redirection that is
+        // true, which is impossible if dust is false.
+
+        const none_ident = &.{ 0, 1, 1, 1, 1, 1 };
+        // (d and not n_r and not e_r and not s_r and not w_r) -> n_c
+        try cnf.clause(&.{ d, n_r, e_r, s_r, w_r, n_c }, none_ident);
+        // (d and not n_r and not e_r and not s_r and not w_r) -> e_c
+        try cnf.clause(&.{ d, n_r, e_r, s_r, w_r, e_c }, none_ident);
+        // (d and not n_r and not e_r and not s_r and not w_r) -> w_c
+        try cnf.clause(&.{ d, n_r, e_r, s_r, w_r, s_c }, none_ident);
+        // (d and not n_r and not e_r and not s_r and not w_r) -> n_c
+        try cnf.clause(&.{ d, n_r, e_r, s_r, w_r, w_c }, none_ident);
+    }
+}
+
+// constrain correct input block type
+fn inputBlockType(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        // Either this is not an input
+        try cnf.clausePart(vars.input.at(pos), 0);
+
+        // Or this is a block
+        if (opt.allow_weak_powered_block_input)
+            try cnf.clausePart(vars.block.at(pos), 1);
+
+        // Or this is a dust
+        if (opt.allow_max_signal_dust_input)
+            try cnf.clausePart(vars.dust.at(pos), 1);
+
+        try cnf.clauseEnd();
+    }
+}
+
+// constrain correct output block type
+fn outputBlockType(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        // Either this is not an output
+        try cnf.clausePart(vars.output.at(pos), 0);
+
+        // Or this is a block
+        if (opt.allow_block_output)
+            try cnf.clausePart(vars.block.at(pos), 1);
+
+        // Or this is a dust
+        if (opt.allow_dust_output)
+            try cnf.clausePart(vars.dust.at(pos), 1);
+
+        // Or this is a torch
+        if (opt.allow_torch_output)
+            try cnf.clausePart(vars.torch.at(pos), 1);
+
+        try cnf.clauseEnd();
+    }
+}
+
+// constrain cardinality of input_map
+fn inputMapCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.input_count) |input_idx| {
+        const input_off = input_idx * opt.area();
+
+        // At least one position is mapped for each input
+        for (0..opt.area()) |pos| {
+            const input = vars.input_map.at(pos + input_off);
+            try cnf.clausePart(input, 1);
+        }
+        try cnf.clauseEnd();
+
+        // At most one position is mapped for each input
+        for (0..opt.area()) |rhs| {
+            for (0..rhs) |lhs| {
+                const a = vars.input_map.at(lhs + input_off);
+                const b = vars.input_map.at(rhs + input_off);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
             }
         }
     }
 }
 
-// Set dust signal strength to max & set "direct" power boolean depending
-// on whether cardinal blocks and torches were directly powered themselves.
-fn enforceDirectPowering(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const x = pos % width;
-            const y = pos / width;
+// constrain cardinality of output_map
+fn outputMapCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.output_count) |output_idx| {
+        const output_off = output_idx * opt.area();
 
-            const prop = can_propagate[state].at(pos);
-            const direct = is_directly_powered[state].at(pos);
+        // At least one position is mapped for each output
+        for (0..opt.area()) |pos| {
+            const output = vars.output_map.at(pos + output_off);
+            try cnf.clausePart(output, 1);
+        }
+        try cnf.clauseEnd();
 
-            const t_on_maybe = isTorchOnOffset(state, x, 0, y, -1);
-            const l_on_maybe = isTorchOnOffset(state, x, -1, y, 0);
-            const r_on_maybe = isTorchOnOffset(state, x, 1, y, 0);
+        // At most one position is mapped for each output
+        for (0..opt.area()) |rhs| {
+            for (0..rhs) |lhs| {
+                const a = vars.output_map.at(lhs + output_off);
+                const b = vars.output_map.at(rhs + output_off);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+            }
+        }
+    }
+}
 
-            const b_pow_maybe = isStronglyPoweredOffset(state, x, 0, y, 1);
-            const l_pow_maybe = isStronglyPoweredOffset(state, x, -1, y, 0);
-            const r_pow_maybe = isStronglyPoweredOffset(state, x, 1, y, 0);
+// prevent overlapping inputs
+fn inputOverlap(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.input_count) |lhs_idx| {
+        for (0..lhs_idx) |rhs_idx| {
+            const lhs_off = lhs_idx * opt.area();
+            const rhs_off = rhs_idx * opt.area();
 
-            if (t_on_maybe) |t_on|
-                // Signal propagation AND t_on on IMPLIES direct powering
-                try cnf.clause(&.{ prop, t_on, direct }, &.{ 0, 0, 1 });
+            for (0..opt.area()) |pos| {
+                const lhs = vars.input_map.at(pos + lhs_off);
+                const rhs = vars.input_map.at(pos + rhs_off);
+                try cnf.clause(&.{ lhs, rhs }, &.{ 0, 0 });
+            }
+        }
+    }
+}
 
-            if (l_on_maybe) |l_on|
-                // Signal propagation AND l_on on IMPLIES direct powering
-                try cnf.clause(&.{ prop, l_on, direct }, &.{ 0, 0, 1 });
+// prevent overlapping outputs
+fn outputOverlap(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.output_count) |lhs_idx| {
+        for (0..lhs_idx) |rhs_idx| {
+            const lhs_off = lhs_idx * opt.area();
+            const rhs_off = rhs_idx * opt.area();
 
-            if (r_on_maybe) |r_on|
-                // Signal propagation AND r_on on IMPLIES direct powering
-                try cnf.clause(&.{ prop, r_on, direct }, &.{ 0, 0, 1 });
+            for (0..opt.area()) |pos| {
+                const lhs = vars.output_map.at(pos + lhs_off);
+                const rhs = vars.output_map.at(pos + rhs_off);
+                try cnf.clause(&.{ lhs, rhs }, &.{ 0, 0 });
+            }
+        }
+    }
+}
 
-            if (b_pow_maybe) |b_pow|
-                // Signal propagation AND b_pow on IMPLIES direct powering
-                try cnf.clause(&.{ prop, b_pow, direct }, &.{ 0, 0, 1 });
+// constrain dust power to signal strength
+fn dustIsPowered(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    if (opt.max_signal_strength) |max_signal| {
+        for (0..opt.states()) |state| {
+            for (0..opt.area()) |pos| {
+                const idx = pos + state * opt.area();
+                const strength_idx = idx * max_signal;
+                const a = vars.strength.at(strength_idx);
+                const b = vars.dust_on.at(idx);
+                try cnf.biteql(a, b);
+            }
+        }
+    }
+}
 
-            if (l_pow_maybe) |l_pow|
-                // Signal propagation AND l_pow on IMPLIES direct powering
-                try cnf.clause(&.{ prop, l_pow, direct }, &.{ 0, 0, 1 });
+// constrain connected_on for connected powered dust
+fn cardinalConnectedOn(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.states()) |state| {
+        for (0..opt.area()) |pos| {
+            const offset = state * opt.area() + pos;
 
-            if (r_pow_maybe) |r_pow|
-                // Signal propagation AND r_pow on IMPLIES direct powering
-                try cnf.clause(&.{ prop, r_pow, direct }, &.{ 0, 0, 1 });
+            const a = getDustOnRelative(opt, vars, state, pos, .n);
+            const b = getDustOnRelative(opt, vars, state, pos, .e);
+            const c = getDustOnRelative(opt, vars, state, pos, .s);
+            const d = getDustOnRelative(opt, vars, state, pos, .w);
 
-            // direct power implies the dust is at max signal strength
-            const signal = signal_strength[state][pos];
-            try cnf.bitimp(direct, signal.at(max_power - 1));
+            const e = getConnectedRelative(opt, vars, pos, .n);
+            const f = getConnectedRelative(opt, vars, pos, .e);
+            const g = getConnectedRelative(opt, vars, pos, .s);
+            const h = getConnectedRelative(opt, vars, pos, .w);
 
-            // Either it's not directly powered:
-            try cnf.clausePart(direct, 0);
-            // Or it is powered from a torch above:
-            if (t_on_maybe) |t_on| try cnf.clausePart(t_on, 1);
-            // Or it is powered from a torch left:
-            if (l_on_maybe) |l_on| try cnf.clausePart(l_on, 1);
-            // Or it is powered from a torch right:
-            if (r_on_maybe) |r_on| try cnf.clausePart(r_on, 1);
-            // Or it is powered from a block below:
-            if (b_pow_maybe) |b_pow| try cnf.clausePart(b_pow, 1);
-            // Or it is powered from a block left:
-            if (l_pow_maybe) |l_pow| try cnf.clausePart(l_pow, 1);
-            // Or it is powered from a block right:
-            if (r_pow_maybe) |r_pow| try cnf.clausePart(r_pow, 1);
-            // Constrain the block to be directly powered:
+            const i = cnf.alloc(1).idx;
+            try cnf.bitand(a, e, i);
+            const j = cnf.alloc(1).idx;
+            try cnf.bitand(b, f, j);
+            const k = cnf.alloc(1).idx;
+            try cnf.bitand(c, g, k);
+            const l = cnf.alloc(1).idx;
+            try cnf.bitand(d, h, l);
+
+            const z = vars.connected_on.at(offset);
+
+            // (i and m) -> z
+            try cnf.clause(&.{ i, z }, &.{ 0, 1 });
+            // (j and m) -> z
+            try cnf.clause(&.{ j, z }, &.{ 0, 1 });
+            // (k and m) -> z
+            try cnf.clause(&.{ k, z }, &.{ 0, 1 });
+            // (l and m) -> z
+            try cnf.clause(&.{ l, z }, &.{ 0, 1 });
+
+            // Either it is not connected to some powered dust
+            try cnf.clausePart(z, 0);
+            // Or it is connected to powered dust on the north
+            try cnf.clausePart(i, 1);
+            // Or it is connected to powered dust on the east
+            try cnf.clausePart(j, 1);
+            // Or it is connected to powered dust on the south
+            try cnf.clausePart(k, 1);
+            // Or it is connected to powered dust on the West
+            try cnf.clausePart(l, 1);
+
             try cnf.clauseEnd();
         }
     }
 }
 
-// Constrain the decayable strength by decrementing the max supply strength
-fn constrainDecayableStrength(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            const max_supply = max_signal_strength[state][pos];
-            const strength = decay_strength[state][pos];
-            try cnf.unarySatDec(max_supply, strength);
-        }
+fn getDustOnRelative(
+    opt: *const Options,
+    vars: *const Variables,
+    state: u64,
+    pos: u64,
+    dir: enum { n, e, s, w },
+) u64 {
+    const x = pos % opt.width;
+    const z = pos / opt.width;
+    const offset = state * opt.area() + pos;
+
+    switch (dir) {
+        .n => if (z > 0)
+            return vars.dust_on.at(offset - opt.width),
+        .e => if (x < opt.width - 1)
+            return vars.dust_on.at(offset + 1),
+        .s => if (z < opt.length - 1)
+            return vars.dust_on.at(offset + opt.width),
+        .w => if (x > 0)
+            return vars.dust_on.at(offset - 1),
     }
+
+    return vars.false_bit;
 }
 
-// If signal can decay, it will be equal to the saturating decrement of the
-// maximum signal of it's neighbors, depending on which ones are connected.
-fn enforceSignalDecay(cnf: *Cnf) !void {
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            for (0..max_power) |off| {
-                // Whether we can decay at this dust
-                const decay = can_decay[state].at(pos);
-                // The signal strength of this dust
-                const signal = signal_strength[state][pos].at(off);
-                // The decayed supply from surroundings
-                const supply = decay_strength[state][pos].at(off);
+fn getConnectedRelative(
+    opt: *const Options,
+    vars: *const Variables,
+    pos: u64,
+    dir: enum { n, e, s, w },
+) u64 {
+    const x = pos % opt.width;
+    const z = pos / opt.width;
 
-                // decay IMPLIES (signal EQUALS supply)
-                try cnf.clause(&.{ decay, signal, supply }, &.{ 0, 0, 1 });
-                try cnf.clause(&.{ decay, signal, supply }, &.{ 0, 1, 0 });
-            }
-        }
+    switch (dir) {
+        .n => if (z > 0)
+            return vars.s_connect.at(pos - opt.width),
+        .e => if (x < opt.width - 1)
+            return vars.e_connect.at(pos + 1),
+        .s => if (z < opt.length - 1)
+            return vars.n_connect.at(pos + opt.width),
+        .w => if (x > 0)
+            return vars.e_connect.at(pos - 1),
     }
+
+    return vars.false_bit;
 }
 
-// Constrain all numbers we are working with to be unary
-fn constrainUnaryNumbers(cnf: *Cnf) !void {
-    if (prevent_cycles) {
-        for (0..area) |pos| {
-            try cnf.unaryConstrain(segment_id[pos]);
-        }
-    }
-
-    for (0..states) |state| {
-        for (0..area) |pos| {
-            inline for (&.{
-                signal_strength,  max_signal_strength,
-                supply_top_left,  supply_bottom_left,
-                supply_top_right, supply_bottom_right,
-                decay_strength,
-            }) |unary| {
-                try cnf.unaryConstrain(unary[state][pos]);
-            }
-        }
-    }
-}
-
-// torches have lesser ID than the block they are on
-fn restrictTorchBlockId(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const id_this = segment_id[pos];
-        const x = pos % width;
-        const y = pos / width;
-
-        if (segmentIdOffset(x, -1, y, 0)) |id_block| {
-            const block = isBlockOffset(x, -1, y, 0).?;
-            const torch = is_right_torch.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (BLOCK AND TORCH) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ block, torch, id_lt }, &.{ 0, 0, 1 });
-        }
-
-        if (segmentIdOffset(x, 1, y, 0)) |id_block| {
-            const block = isBlockOffset(x, 1, y, 0).?;
-            const torch = is_left_torch.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (BLOCK AND TORCH) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ block, torch, id_lt }, &.{ 0, 0, 1 });
-        }
-
-        if (segmentIdOffset(x, 0, y, 1)) |id_block| {
-            const block = isBlockOffset(x, 0, y, 1).?;
-            const torch = is_standing_torch.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (BLOCK AND TORCH) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ block, torch, id_lt }, &.{ 0, 0, 1 });
-        }
-    }
-}
-
-// blocks above torches have lesser ID than the torch they are above
-fn restrictBlockTorchId(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const id_this = segment_id[pos];
-        const x = pos % width;
-        const y = pos / width;
-
-        if (segmentIdOffset(x, 0, y, 1)) |id_block| {
-            const torch = isTorchOffset(x, 0, y, 1).?;
-            const block = is_block.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (TORCH AND BLOCK) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ torch, block, id_lt }, &.{ 0, 0, 1 });
-        }
-    }
-}
-
-// blocks have equal IDs to the dust next by or above them
-fn restrictBlockDustId(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const id_this = segment_id[pos];
-        const x = pos % width;
-        const y = pos / width;
-
-        if (segmentIdOffset(x, -1, y, 0)) |id_block| {
-            const dust = isDustOffset(x, -1, y, 0).?;
-            const block = is_block.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (DUST AND BLOCK) IMPLIES (NOT ID_NE)
-            try cnf.clause(&.{ dust, block, id_ne }, &.{ 0, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, 1, y, 0)) |id_block| {
-            const dust = isDustOffset(x, 1, y, 0).?;
-            const block = is_block.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (DUST AND BLOCK) IMPLIES (NOT ID_NE)
-            try cnf.clause(&.{ dust, block, id_ne }, &.{ 0, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, 0, y, -1)) |id_block| {
-            const dust = isDustOffset(x, 0, y, -1).?;
-            const block = is_block.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (DUST AND BLOCK) IMPLIES (NOT ID_NE)
-            try cnf.clause(&.{ dust, block, id_ne }, &.{ 0, 0, 0 });
-        }
-    }
-}
-
-// dust have lesser ID than the torch next to or above them
-fn restrictDustTorchId(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const id_this = segment_id[pos];
-        const x = pos % width;
-        const y = pos / width;
-
-        if (segmentIdOffset(x, -1, y, 0)) |id_block| {
-            const torch = isTorchOffset(x, -1, y, 0).?;
-            const dust = is_dust.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (TORCH AND DUST) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ torch, dust, id_lt }, &.{ 0, 0, 1 });
-        }
-
-        if (segmentIdOffset(x, 1, y, 0)) |id_block| {
-            const torch = isTorchOffset(x, 1, y, 0).?;
-            const dust = is_dust.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (TORCH AND DUST) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ torch, dust, id_lt }, &.{ 0, 0, 1 });
-        }
-
-        if (segmentIdOffset(x, 0, y, -1)) |id_block| {
-            const torch = isTorchOffset(x, 0, y, -1).?;
-            const dust = is_dust.at(pos);
-
-            const id_lt = cnf.alloc(1).idx;
-            try cnf.unaryLT(id_this, id_block, id_lt);
-            // (TORCH AND DUST) IMPLIES (id_this < id_block)
-            try cnf.clause(&.{ torch, dust, id_lt }, &.{ 0, 0, 1 });
-        }
-    }
-}
-
-// connected dust have equal IDs
-fn restrictDustGroupId(cnf: *Cnf) !void {
-    for (0..area) |pos| {
-        const id_this = segment_id[pos];
-        const x = pos % width;
-        const y = pos / width;
-
-        const t_block_maybe = isBlockOffset(x, 0, y, -1);
-        const l_block_maybe = isBlockOffset(x, -1, y, 0);
-        const r_block_maybe = isBlockOffset(x, 1, y, 0);
-
-        if (segmentIdOffset(x, -1, y, -1)) |id_block| {
-            const other = isDustOffset(x, -1, y, -1).?;
-            const block = t_block_maybe.?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND NOT block AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, block, dust, id_ne }, &.{ 0, 1, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, -1, y, 1)) |id_block| {
-            const other = isDustOffset(x, -1, y, 1).?;
-            const block = l_block_maybe.?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND NOT block AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, block, dust, id_ne }, &.{ 0, 1, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, 1, y, -1)) |id_block| {
-            const other = isDustOffset(x, 1, y, -1).?;
-            const block = t_block_maybe.?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND NOT block AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, block, dust, id_ne }, &.{ 0, 1, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, 1, y, 1)) |id_block| {
-            const other = isDustOffset(x, 1, y, 1).?;
-            const block = r_block_maybe.?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND NOT block AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, block, dust, id_ne }, &.{ 0, 1, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, -1, y, 0)) |id_block| {
-            const other = isDustOffset(x, -1, y, 0).?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, dust, id_ne }, &.{ 0, 0, 0 });
-        }
-
-        if (segmentIdOffset(x, 1, y, 0)) |id_block| {
-            const other = isDustOffset(x, 1, y, 0).?;
-            const dust = is_dust.at(pos);
-
-            const id_ne = cnf.alloc(1).idx;
-            try cnf.unaryNE(id_this, id_block, id_ne);
-            // (other AND dust) IMPLIES (NOT id_ne)
-            try cnf.clause(&.{ other, dust, id_ne }, &.{ 0, 0, 0 });
-        }
-    }
-}
-
-// constrain the number of torches
-fn constrainTorchCount(cnf: *Cnf) !void {
-    if (max_torch != null or min_torch != null) {
-        const torch_card = try cnf.unaryTotalize(is_torch);
-
-        if (max_torch) |count| {
-            try cnf.unaryConstrainLEVal(torch_card, count);
-        }
-
-        if (min_torch) |count| {
-            try cnf.unaryConstrainGEVal(torch_card, count);
-        }
-    }
-}
-
-// constrain torch type
-fn constrainTorchType(cnf: *Cnf) !void {
-    if (!allow_standing_torch) for (0..area) |pos|
-        try cnf.bitfalse(is_standing_torch.at(pos));
-    if (!allow_left_torch) for (0..area) |pos|
-        try cnf.bitfalse(is_left_torch.at(pos));
-    if (!allow_right_torch) for (0..area) |pos|
-        try cnf.bitfalse(is_right_torch.at(pos));
-}
-
-// remove unchanging torches and dust
-fn restrictUnchangingTorchesAndDust(cnf: *Cnf) !void {
-    if (enforce_state_change) {
-        for (0..area) |pos| {
-            inline for (&.{
-                &.{ is_torch_on, is_torch },
-                &.{ is_dust_powered, is_dust },
-            }) |stateful| {
-                inline for (&.{ 0, 1 }) |power| {
-                    for (0..states) |state|
-                        try cnf.clausePart(stateful[0][state].at(pos), power);
-                    try cnf.clausePart(stateful[1].at(pos), 0);
-                    try cnf.clauseEnd();
-                }
-            }
-        }
-    }
-}
-
-// restrict redstone dust to not touch other redstone dust
-fn restrictRedstoneDustConnectivity(cnf: *Cnf) !void {
-    if (single_redstone_dust) {
-        // Horizontal redstone dust
-        for (0..width - 1) |x| {
-            for (0..height) |y| {
-                const pos = x + y * width;
-
-                const l = is_dust.at(pos);
-                const r = is_dust.at(pos + 1);
-
-                // No dust can exist side-by-side with other dust
-                try cnf.clause(&.{ l, r }, &.{ 0, 0 });
-            }
-        }
-
-        // Diagonal redstone dust
-        for (0..width - 1) |x| {
-            for (0..height - 1) |y| {
-                const pos = x + y * width;
-
-                const tl = is_dust.at(pos);
-                const tr = is_dust.at(pos + 1);
-                const bl = is_dust.at(pos + width);
-                const br = is_dust.at(pos + width + 1);
-
-                // upper-right diagonal redstone dust implies top left block
-                try cnf.clause(&.{ bl, tr, tl }, &.{ 0, 0, 1 });
-
-                // downward-left diagonal redstone dust implies top right block
-                try cnf.clause(&.{ tl, br, tr }, &.{ 0, 0, 1 });
-            }
-        }
-    }
-}
-
-// restrict torches from obviously burning out instantly
-fn restrictSimpleTorchCycles(cnf: *Cnf) !void {
-
-    //        BLK
-    //        BLK
-    //  DST   BLK
-    //
-    //  BLK     o
-    //  BLK    /
-    //  BLK   /
-
-    if (allow_right_torch) {
-        for (0..width - 1) |x| {
-            for (0..height - 1) |y| {
-                const pos = x + y * width;
-                const tl_d = is_dust.at(pos);
-                const tr_b = is_block.at(pos + 1);
-                const br_t = is_right_torch.at(pos + width + 1);
-                try cnf.clause(&.{ tl_d, tr_b, br_t }, &.{ 0, 0, 0 });
-            }
-        }
-    }
-
-    //  BLK
-    //  BLK
-    //  BLK   DST
-    //
-    //  o     BLK
-    //   \    BLK
-    //    \   BLK
-
-    if (allow_left_torch) {
-        for (0..width - 1) |x| {
-            for (0..height - 1) |y| {
-                const pos = x + y * width;
-                const tl_b = is_block.at(pos);
-                const tr_d = is_dust.at(pos + 1);
-                const bl_t = is_left_torch.at(pos + width);
-                try cnf.clause(&.{ tl_b, tr_d, bl_t }, &.{ 0, 0, 0 });
-            }
-        }
-    }
-}
-
-// block torches from appearing on the very bottom
-fn restrictBottomTorches(cnf: *Cnf) !void {
-    for (0..width) |x| {
-        const y_off = (height - 1) * width;
-        const torch = is_torch.at(x + y_off);
-        try cnf.bitfalse(torch);
-    }
-}
-
-fn encodeMain(io: Io, _: Allocator) !void {
-    const cwd = Io.Dir.cwd();
-
-    // Create a temporary file and writer to hold the CNF clauses
-    var temp_closed: bool = false;
-    const temp_file = try cwd.createFile(io, "clauses.cnf", .{});
-    errdefer if (!temp_closed) temp_file.close(io);
-    var temp_buffer: [4096]u8 = undefined;
-    var temp_writer = temp_file.writer(io, &temp_buffer);
-    const temp = &temp_writer.interface;
-
-    var cnf: Cnf = .init(temp);
-    defer cnf.deinit();
-
-    if (prevent_cycles) {
-        std.debug.print("restrictTorchBlockId...\n", .{});
-        try restrictTorchBlockId(&cnf);
-        std.debug.print("restrictBlockTorchId...\n", .{});
-        try restrictBlockTorchId(&cnf);
-        std.debug.print("restrictBlockDustId...\n", .{});
-        try restrictBlockDustId(&cnf);
-        std.debug.print("restrictDustTorchId...\n", .{});
-        try restrictDustTorchId(&cnf);
-        std.debug.print("restrictDustGroupId...\n", .{});
-        try restrictDustGroupId(&cnf);
-    }
-
-    std.debug.print("initializeGlobals...\n", .{});
-    try initializeGlobals(&cnf);
-    std.debug.print("enforceCanDecay...\n", .{});
-    try enforceCanDecay(&cnf);
-    std.debug.print("enforceTorchPower...\n", .{});
-    try enforceTorchPower(&cnf);
-    std.debug.print("enforceSignalDecay...\n", .{});
-    try enforceSignalDecay(&cnf);
-    std.debug.print("enforceDustOnBlock...\n", .{});
-    try enforceDustOnBlock(&cnf);
-    std.debug.print("constrainTorchType...\n", .{});
-    try constrainTorchType(&cnf);
-    std.debug.print("enforceGeneralPower...\n", .{});
-    try enforceGeneralPower(&cnf);
-    std.debug.print("enforceCanPropagate...\n", .{});
-    try enforceCanPropagate(&cnf);
-    std.debug.print("enforceWeakPowering...\n", .{});
-    try enforceWeakPowering(&cnf);
-    std.debug.print("constrainTorchCount...\n", .{});
-    try constrainTorchCount(&cnf);
-    std.debug.print("enforceDustIsPowered...\n", .{});
-    try enforceDustIsPowered(&cnf);
-    std.debug.print("restrictBottomTorches...\n", .{});
-    try restrictBottomTorches(&cnf);
-    std.debug.print("enforceDirectPowering...\n", .{});
-    try enforceDirectPowering(&cnf);
-    std.debug.print("enforceStrongPowering...\n", .{});
-    try enforceStrongPowering(&cnf);
-    std.debug.print("constrainUnaryNumbers...\n", .{});
-    try constrainUnaryNumbers(&cnf);
-    std.debug.print("enforceSingleTorchType...\n", .{});
-    try enforceSingleTorchType(&cnf);
-    std.debug.print("enforceSingleBlockType...\n", .{});
-    try enforceSingleBlockType(&cnf);
-    std.debug.print("enforceInputOutputDust...\n", .{});
-    try enforceInputOutputDust(&cnf);
-    std.debug.print("enforceTorchesOnBlocks...\n", .{});
-    try enforceTorchesOnBlocks(&cnf);
-    std.debug.print("restrictSimpleTorchCycles...\n", .{});
-    try restrictSimpleTorchCycles(&cnf);
-    std.debug.print("constrainSupplyableSignal...\n", .{});
-    try constrainSupplyableSignal(&cnf);
-    std.debug.print("enforceDustSignalExistence...\n", .{});
-    try enforceDustSignalExistence(&cnf);
-    std.debug.print("constrainDecayableStrength...\n", .{});
-    try constrainDecayableStrength(&cnf);
-    std.debug.print("constrainMaxNeighborStrength...\n", .{});
-    try constrainMaxNeighborStrength(&cnf);
-    std.debug.print("constrainInputOutputOrdering...\n", .{});
-    try constrainInputOutputOrdering(&cnf);
-    std.debug.print("enforceInputOutputCardinality...\n", .{});
-    try enforceInputOutputCardinality(&cnf);
-    std.debug.print("constrainInputOutputSideBlocks...\n", .{});
-    try constrainInputOutputSideBlocks(&cnf);
-    std.debug.print("constrainSpecificInputDustValue...\n", .{});
-    try constrainSpecificInputDustValue(&cnf);
-    std.debug.print("constrainSpecificOutputDustValue...\n", .{});
-    try constrainSpecificOutputDustValue(&cnf);
-    std.debug.print("enforceInputOutputMapImplication...\n", .{});
-    try enforceInputOutputMapImplication(&cnf);
-    std.debug.print("restrictUnchangingTorchesAndDust...\n", .{});
-    try restrictUnchangingTorchesAndDust(&cnf);
-    std.debug.print("restrictRedstoneDustConnectivity...\n", .{});
-    try restrictRedstoneDustConnectivity(&cnf);
-    std.debug.print("Saving...\n", .{});
-
-    // Open "real_file" (real output) and create buffered writer "real"
-    const real_file = try cwd.createFile(io, "problem.cnf", .{});
-    defer real_file.close(io);
-    var real_buffer: [4096]u8 = undefined;
-    var real_writer = real_file.writer(io, &real_buffer);
-    const real = &real_writer.interface;
-
-    // Flush completed CNF clauses, close the temp file, and write the header
-    try cnf.flush();
-    try cnf.header(real);
-    temp_file.close(io);
-    temp_closed = true;
-
-    // Open the temp file for reading and stream it into the output file
-    const read_file = try cwd.openFile(io, "clauses.cnf", .{});
-    defer read_file.close(io);
-    var read_buffer: [4096]u8 = undefined;
-    var temp_reader = temp_file.reader(io, &read_buffer);
-    const reader = &temp_reader.interface;
-    _ = try reader.streamRemaining(real);
-
-    // Flush output sent to the real file and delete the temporary file
-    try real.flush();
-    try cwd.deleteFile(io, "clauses.cnf");
+// constrain block_on (based on connected_on, block, input, etc.)
+fn blockPowered(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    _ = cnf;
+    _ = vars;
+    _ = opt;
+
+    // a block is powered if:
+    // - input_map at that position & input meant to be on
 }
