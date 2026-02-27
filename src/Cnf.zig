@@ -56,8 +56,8 @@ pub const Bits = struct {
         return self.idx + off;
     }
 
-    pub fn slice(self: @This(), start: u64, end: ?u64) @This() {
-        const end_idx: u64 = end orelse self.len;
+    pub fn slice(self: @This(), start: u64, limit: ?u64) @This() {
+        const end_idx: u64 = limit orelse self.len;
         assert(start <= self.len and end_idx <= self.len);
         return .init(self.idx + start, end_idx - start);
     }
@@ -73,7 +73,7 @@ pub fn alloc(self: *@This(), count: u64) Bits {
 // ------------------------------------------------------------ CLAUSE ENCODING
 
 // Write a portion of one CNF clause with an index & identity
-pub fn clausePart(self: *@This(), index: u64, identity: u1) !void {
+pub fn part(self: *@This(), index: u64, identity: u1) !void {
     // Record any returned error, but don't return it
     switch (identity) {
         1 => try self.clause_writer.print("{} ", .{index}),
@@ -84,8 +84,8 @@ pub fn clausePart(self: *@This(), index: u64, identity: u1) !void {
     self.part_count += 1;
 }
 
-// End the current CNF clause (only for use with clausePart)
-pub fn clauseEnd(self: *@This()) !void {
+// End the current CNF clause (only for use with part)
+pub fn end(self: *@This()) !void {
     // Ensure we wrote a clause with at least one part.
     if (self.part_count == 0) return error.EmptyClause;
     // Write out the end of this clause in CNF
@@ -145,12 +145,14 @@ pub fn bitimp(self: *@This(), lhs: u64, rhs: u64) !void {
 
 /// lhs NOT EQUIVALENT TO rhs
 pub fn bitnot(self: *@This(), lhs: u64, rhs: u64) !void {
-    try self.bitop1(lhs, rhs, .{ 1, 0 });
+    try self.clause(&.{ lhs, rhs }, &.{ 0, 0 });
+    try self.clause(&.{ lhs, rhs }, &.{ 1, 1 });
 }
 
 /// lhs EQUIVALENT TO rhs
 pub fn biteql(self: *@This(), lhs: u64, rhs: u64) !void {
-    try self.bitop1(lhs, rhs, .{ 0, 1 });
+    try self.clause(&.{ lhs, rhs }, &.{ 0, 1 });
+    try self.clause(&.{ lhs, rhs }, &.{ 1, 0 });
 }
 
 pub fn bitop1(self: *@This(), a: u64, b: u64, t: [2]u1) !void {
@@ -167,12 +169,12 @@ pub fn bitnor(self: *@This(), lhs: u64, rhs: u64, result: u64) !void {
 
 /// result <- lhs AND rhs
 pub fn bitand(self: *@This(), lhs: u64, rhs: u64, result: u64) !void {
+    // If the lhs and rhs are true, the result must be true
+    try self.clause(&.{ lhs, rhs, result }, &.{ 0, 0, 1 });
     // if the lhs is false, then the result must be false
     try self.clause(&.{ lhs, result }, &.{ 1, 0 });
     // If the rhs is false, then the result must be false
     try self.clause(&.{ rhs, result }, &.{ 1, 0 });
-    // If the lhs and rhs are true, the result must be true
-    try self.clause(&.{ lhs, rhs, result }, &.{ 0, 0, 1 });
 }
 
 /// result <- lhs NAND rhs
@@ -182,7 +184,12 @@ pub fn bitnand(self: *@This(), lhs: u64, rhs: u64, result: u64) !void {
 
 /// result <- lhs OR rhs
 pub fn bitor(self: *@This(), lhs: u64, rhs: u64, result: u64) !void {
-    try self.bitop2(lhs, rhs, result, .{ 0, 1, 1, 1 });
+    // If the LHS is true, then the result MUST be true
+    try self.clause(&.{ lhs, result }, &.{ 0, 1 });
+    // If the RHS is true, then the result MUST be true
+    try self.clause(&.{ rhs, result }, &.{ 0, 1 });
+    // If the LHS and the RHS are false the result MUST be false
+    try self.clause(&.{ lhs, rhs, result }, &.{ 1, 1, 0 });
 }
 
 /// result <- lhs XNOR rhs
@@ -269,11 +276,11 @@ pub fn unaryMax(self: *@This(), input: []const Bits, output: Bits) !void {
     for (0..output.len) |off| {
         for (input) |bit_list|
             // It could be the case the unary bit is true
-            try self.clausePart(bit_list.at(off), 1);
+            try self.part(bit_list.at(off), 1);
         // It could be the case the result bit is false
-        try self.clausePart(output.at(off), 0);
+        try self.part(output.at(off), 0);
         // The output bit is false if every bit is false
-        try self.clauseEnd();
+        try self.end();
     }
 }
 
@@ -294,11 +301,11 @@ pub fn unaryMin(self: *@This(), input: []const Bits, output: Bits) !void {
     for (0..output.len) |off| {
         for (input) |bit_list|
             // It could be the case the unary bit is false
-            try self.clausePart(bit_list.at(off), 0);
+            try self.part(bit_list.at(off), 0);
         // It could be the case the result bit is true
-        try self.clausePart(output.at(off), 1);
+        try self.part(output.at(off), 1);
         // The output bit is true if every bit is true
-        try self.clauseEnd();
+        try self.end();
     }
 }
 
@@ -384,9 +391,9 @@ pub fn unaryNE(self: *@This(), lhs: Bits, rhs: Bits, ne: u64) !void {
 
     // At least one of the XORs must be true to be not equal
     for (0..lhs.len) |off|
-        try self.clausePart(xors.at(off), 1);
-    try self.clausePart(ne, 0);
-    try self.clauseEnd();
+        try self.part(xors.at(off), 1);
+    try self.part(ne, 0);
+    try self.end();
 }
 
 /// Constrain the lhs unary number to be different to the
@@ -405,8 +412,8 @@ pub fn unaryConstrainNE(self: *@This(), lhs: Bits, rhs: Bits) !void {
 
     // Constrain at least one of the xors to be true
     for (0..lhs.len) |off|
-        try self.clausePart(xors.at(off), 1);
-    try self.clauseEnd();
+        try self.part(xors.at(off), 1);
+    try self.end();
 }
 
 /// Constrains one "less_than" bit to be equivalent to the
@@ -567,9 +574,9 @@ pub fn multiBitOR(self: *@This(), bits: Bits, result: u64) !void {
 
     for (0..bits.len) |off|
         // Either one of the bits is true
-        try self.clausePart(bits.at(off), 1);
+        try self.part(bits.at(off), 1);
     // Otherwise the result is false
-    try self.clausePart(result, 0);
+    try self.part(result, 0);
     // The result is false if every bit is false
-    try self.clauseEnd();
+    try self.end();
 }

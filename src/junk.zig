@@ -70,12 +70,12 @@ fn enforceInputOutputMapImplication(cnf: *Cnf) !void {
 
     for (0..height) |y| {
         // Either the current block is not an input
-        try cnf.clausePart(is_input.at(y), 0);
+        try cnf.part(is_input.at(y), 0);
         for (input_map) |input|
             // Or there is a block that is a specific input
-            try cnf.clausePart(input.at(y), 1);
+            try cnf.part(input.at(y), 1);
         // general inputs require at least one specific input
-        try cnf.clauseEnd();
+        try cnf.end();
     }
 
     // Specific outputs are a general output
@@ -85,12 +85,12 @@ fn enforceInputOutputMapImplication(cnf: *Cnf) !void {
 
     for (0..height) |y| {
         // Either the current block is not an output
-        try cnf.clausePart(is_output.at(y), 0);
+        try cnf.part(is_output.at(y), 0);
         for (output_map) |output|
             // Or there is a block that is a specific output
-            try cnf.clausePart(output.at(y), 1);
+            try cnf.part(output.at(y), 1);
         // general outputs require at least one specific output
-        try cnf.clauseEnd();
+        try cnf.end();
     }
 }
 
@@ -237,15 +237,15 @@ fn enforceInputOutputCardinality(cnf: *Cnf) !void {
     for (input_map) |input| {
         // At least one block is each input
         for (0..height) |y|
-            try cnf.clausePart(input.at(y), 1);
-        try cnf.clauseEnd();
+            try cnf.part(input.at(y), 1);
+        try cnf.end();
     }
 
     for (output_map) |output| {
         // At least one block is each output
         for (0..height) |y|
-            try cnf.clausePart(output.at(y), 1);
-        try cnf.clauseEnd();
+            try cnf.part(output.at(y), 1);
+        try cnf.end();
     }
 }
 
@@ -323,17 +323,17 @@ fn enforceWeakPowering(cnf: *Cnf) !void {
             if (t) |dust| try cnf.clause(&.{ dust, b, p }, &.{ 0, 0, 1 });
 
             // It is either the case that the block is not powered
-            try cnf.clausePart(p, 0);
+            try cnf.part(p, 0);
             // Or it is the case that the block is not a block
-            try cnf.clausePart(b, 0);
+            try cnf.part(b, 0);
             // Or it is the case that the right dust is powered
-            if (r) |dust| try cnf.clausePart(dust, 1);
+            if (r) |dust| try cnf.part(dust, 1);
             // Or it is the case that the left dust is powered
-            if (l) |dust| try cnf.clausePart(dust, 1);
+            if (l) |dust| try cnf.part(dust, 1);
             // Or it is the case that the top dust is powered
-            if (t) |dust| try cnf.clausePart(dust, 1);
+            if (t) |dust| try cnf.part(dust, 1);
             // If all the dust is off, the block is not powered
-            try cnf.clauseEnd();
+            try cnf.end();
 
             // If the block is powered, it must be a block
             try cnf.bitimp(p, b);
@@ -645,21 +645,21 @@ fn constrainMaxNeighborStrength(cnf: *Cnf) !void {
                 if (r_sup_maybe) |r_sup| try cnf.bitimp(r_sup.at(off), max);
 
                 // Either the power is less than this level
-                try cnf.clausePart(max, 0);
+                try cnf.part(max, 0);
                 // Or the top left has at least this much power
-                try cnf.clausePart(tl_sup.at(off), 1);
+                try cnf.part(tl_sup.at(off), 1);
                 // Or the bottom left has at least this much power
-                try cnf.clausePart(bl_sup.at(off), 1);
+                try cnf.part(bl_sup.at(off), 1);
                 // Or the top right has at least this much power
-                try cnf.clausePart(tr_sup.at(off), 1);
+                try cnf.part(tr_sup.at(off), 1);
                 // Or the bottom right has at least this much power
-                try cnf.clausePart(br_sup.at(off), 1);
+                try cnf.part(br_sup.at(off), 1);
                 // Or the left has at least this much power
-                if (l_sup_maybe) |l_sup| try cnf.clausePart(l_sup.at(off), 1);
+                if (l_sup_maybe) |l_sup| try cnf.part(l_sup.at(off), 1);
                 // Or the right has at least this much power
-                if (r_sup_maybe) |r_sup| try cnf.clausePart(r_sup.at(off), 1);
+                if (r_sup_maybe) |r_sup| try cnf.part(r_sup.at(off), 1);
                 // The power is at most the power of the supply
-                try cnf.clauseEnd();
+                try cnf.end();
             }
         }
     }
@@ -713,21 +713,21 @@ fn enforceDirectPowering(cnf: *Cnf) !void {
             try cnf.bitimp(direct, signal.at(max_power - 1));
 
             // Either it's not directly powered:
-            try cnf.clausePart(direct, 0);
+            try cnf.part(direct, 0);
             // Or it is powered from a torch above:
-            if (t_on_maybe) |t_on| try cnf.clausePart(t_on, 1);
+            if (t_on_maybe) |t_on| try cnf.part(t_on, 1);
             // Or it is powered from a torch left:
-            if (l_on_maybe) |l_on| try cnf.clausePart(l_on, 1);
+            if (l_on_maybe) |l_on| try cnf.part(l_on, 1);
             // Or it is powered from a torch right:
-            if (r_on_maybe) |r_on| try cnf.clausePart(r_on, 1);
+            if (r_on_maybe) |r_on| try cnf.part(r_on, 1);
             // Or it is powered from a block below:
-            if (b_pow_maybe) |b_pow| try cnf.clausePart(b_pow, 1);
+            if (b_pow_maybe) |b_pow| try cnf.part(b_pow, 1);
             // Or it is powered from a block left:
-            if (l_pow_maybe) |l_pow| try cnf.clausePart(l_pow, 1);
+            if (l_pow_maybe) |l_pow| try cnf.part(l_pow, 1);
             // Or it is powered from a block right:
-            if (r_pow_maybe) |r_pow| try cnf.clausePart(r_pow, 1);
+            if (r_pow_maybe) |r_pow| try cnf.part(r_pow, 1);
             // Constrain the block to be directly powered:
-            try cnf.clauseEnd();
+            try cnf.end();
         }
     }
 }
@@ -1034,9 +1034,9 @@ fn restrictUnchangingTorchesAndDust(cnf: *Cnf) !void {
             }) |stateful| {
                 inline for (&.{ 0, 1 }) |power| {
                     for (0..states) |state|
-                        try cnf.clausePart(stateful[0][state].at(pos), power);
-                    try cnf.clausePart(stateful[1].at(pos), 0);
-                    try cnf.clauseEnd();
+                        try cnf.part(stateful[0][state].at(pos), power);
+                    try cnf.part(stateful[1].at(pos), 0);
+                    try cnf.end();
                 }
             }
         }
