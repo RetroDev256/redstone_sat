@@ -210,6 +210,10 @@ const Variables = struct {
     torch_on: Bits, // torch is powered
     block_on: Bits, // block is powered
     dust_on: Bits, // dust is powered
+    n_connect_on: Bits, // dust connected to the north AND the dust is on
+    e_connect_on: Bits, // dust connected to the east AND the dust is on
+    s_connect_on: Bits, // dust connected to the south AND the dust is on
+    w_connect_on: Bits, // dust connected to the west AND the dust is on
     override_on: Bits, // *override* something to be on
     constrain_on: Bits, // *constrain* something to be on
     constrain_off: Bits, // *constrain* something to be off
@@ -254,6 +258,10 @@ const Variables = struct {
             .torch_on = cnf.alloc(states * area),
             .block_on = cnf.alloc(states * area),
             .dust_on = cnf.alloc(states * area),
+            .n_connect_on = cnf.alloc(states * area),
+            .e_connect_on = cnf.alloc(states * area),
+            .s_connect_on = cnf.alloc(states * area),
+            .w_connect_on = cnf.alloc(states * area),
             .override_on = cnf.alloc(states * area),
             .constrain_on = cnf.alloc(states * area),
             .constrain_off = cnf.alloc(states * area),
@@ -297,7 +305,6 @@ fn encodeMain(
         "inputBlockType",
         "inputOverrideOn",
         "outputBlockType",
-        "torchPowersDust",
         "blockSingularity",
         "inputCardinality",
         "torchDistinctness",
@@ -307,6 +314,7 @@ fn encodeMain(
         "torchDustConnection",
         "blockDustConnection",
         "inputMapCardinality",
+        "connectedPoweredDust",
         "blockTorchConnection",
         "outputMapCardinality",
         "dustRedirectionSources",
@@ -609,6 +617,17 @@ fn cardinalRedirect(vars: *const Variables, pos: u64, comptime dir: Dir) u64 {
         .e => vars.e_redirect.at(pos),
         .s => vars.s_redirect.at(pos),
         .w => vars.w_redirect.at(pos),
+    };
+}
+
+/// Returns whether the current block is both dust, connected, and powered for
+/// a particular state * area + position offset, and comptime known direction.
+fn connectedDustOn(vars: *const Variables, off: u64, comptime dir: Dir) u64 {
+    return switch (dir) {
+        .n => vars.n_connect_on.at(off),
+        .e => vars.n_connect_on.at(off),
+        .s => vars.n_connect_on.at(off),
+        .w => vars.n_connect_on.at(off),
     };
 }
 
@@ -1133,6 +1152,35 @@ fn dustIsPowered(
     }
 }
 
+// determine if dust is cardinally connected AND on
+fn connectedPoweredDust(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.states()) |state| {
+        for (0..opt.area()) |pos| {
+            const offset = state * opt.area() + pos;
+            const on = vars.dust_on.at(offset);
+
+            const n_c = vars.n_connect.at(pos);
+            const e_c = vars.e_connect.at(pos);
+            const s_c = vars.s_connect.at(pos);
+            const w_c = vars.w_connect.at(pos);
+
+            const n_c_on = vars.n_connect_on.at(offset);
+            const e_c_on = vars.e_connect_on.at(offset);
+            const s_c_on = vars.s_connect_on.at(offset);
+            const w_c_on = vars.w_connect_on.at(offset);
+
+            try cnf.bitand(on, n_c, n_c_on);
+            try cnf.bitand(on, e_c, e_c_on);
+            try cnf.bitand(on, s_c, s_c_on);
+            try cnf.bitand(on, w_c, w_c_on);
+        }
+    }
+}
+
 // determine if a block is currently powered
 fn blockPowered(
     cnf: *Cnf,
@@ -1156,10 +1204,9 @@ fn blockPowered(
             inline for (.{ .n, .e, .s, .w }) |dir| {
                 if (cardinal(opt, pos, dir)) |off| {
                     const backwards = comptime opposite(dir);
-                    const c_off = state * opt.area() + off;
-                    const d_on = vars.dust_on.at(c_off);
-                    const d_con = connectedDust(vars, off, backwards);
-                    try cnf.clause(&.{ b, d_on, d_con, p }, &.{ 0, 0, 0, 1 });
+                    const c_offset = state * opt.area() + off;
+                    const c_on = connectedDustOn(vars, c_offset, backwards);
+                    try cnf.clause(&.{ b, c_on, p }, &.{ 0, 0, 1 });
                 }
             }
 
@@ -1173,31 +1220,23 @@ fn blockPowered(
             // If not a block, this can't be powered as a block
             try cnf.clause(&.{ b, p }, &.{ 1, 0 });
 
-            inline for (0b0000..0b1111 + 1) |combos| {
-                // EITHER: the block is unpowered
-                try cnf.part(p, 0);
-                // OR: the block is overridden to be powered
-                try cnf.part(o, 1);
-                // OR: the cell is not actually a block
-                try cnf.part(b, 0);
+            // EITHER: the block is unpowered
+            try cnf.part(p, 0);
 
-                inline for (&.{ .n, .e, .s, .w }, 0..4) |dir, combo_bit| {
-                    if (cardinal(opt, pos, dir)) |off| {
-                        if (combos & (1 << combo_bit) != 0) {
-                            // OR: cardinal dust is not connected
-                            try cnf.part(connectedDust(vars, pos, dir), 0);
-                            // OR: cardinal dust is powered on
-                            const c_off = state * opt.area() + off;
-                            try cnf.part(vars.dust_on.at(c_off), 1);
-                        } else {
-                            // OR: cardinal dust is connected
-                            try cnf.part(connectedDust(vars, pos, dir), 1);
-                        }
-                    }
+            // OR: the block is overridden to be powered
+            try cnf.part(o, 1);
+
+            // OR: one of the adjacent blocks are connected, powered, and dust
+            inline for (.{ .n, .e, .s, .w }) |dir| {
+                if (cardinal(opt, pos, dir)) |off| {
+                    const backwards = comptime opposite(dir);
+                    const c_offset = state * opt.area() + off;
+                    const c_on = connectedDustOn(vars, c_offset, backwards);
+                    try cnf.part(c_on, 1);
                 }
-
-                try cnf.end();
             }
+
+            try cnf.end();
         }
     }
 }
@@ -1418,7 +1457,7 @@ fn outputConstrainOn(
     }
 }
 
-// constrain signal strength and power of dust
+// TODO: constrain signal strength and power of dust
 fn dustPowerStrengthPropagation(
     cnf: *Cnf,
     vars: *const Variables,
@@ -1460,32 +1499,3 @@ fn dustPowerStrengthPropagation(
         }
     }
 }
-
-// torches that are on will power adjacent dust
-fn torchPowersDust(
-    cnf: *Cnf,
-    vars: *const Variables,
-    opt: *const Options,
-) !void {
-    for (0..opt.states()) |state| {
-        for (0..opt.area()) |pos| {
-            const p_offset = state * opt.area() + pos;
-            const p = vars.torch_on.at(p_offset);
-
-            inline for (&.{ .n, .e, .s, .w }) |dir| {
-                if (cardinal(opt, pos, dir)) |off| {
-                    const d = vars.dust.at(off);
-                    const d_off = state * opt.area() + off;
-                    const d_p = vars.dust_on.at(d_off);
-                    try cnf.clause(&.{ p, d, d_p }, &.{ 0, 0, 1 });
-                }
-            }
-        }
-    }
-}
-
-// TODO: the reason that this won't constrain valid circuits is because the dust
-// is not constrained to ever be FALSE. It can simply choose whether to be on or
-// not. This means that the logic for signal strength propagation is required.
-// This also means that it might not be possible to have infinite-length dust
-// without extra clauses to count it... unfortunate.
