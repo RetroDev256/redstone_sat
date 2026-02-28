@@ -1277,21 +1277,18 @@ fn inputMapCardinality(
     vars: *const Variables,
     opt: *const Options,
 ) !void {
-    for (0..opt.input_count) |input_idx| {
-        const input_off = input_idx * opt.area();
+    for (0..opt.input_count) |input| {
 
         // At least one position is mapped for each input
-        for (0..opt.area()) |pos| {
-            const input = vars.input_map.at(pos + input_off);
-            try cnf.part(input, 1);
-        }
+        for (0..opt.area()) |pos|
+            try cnf.part(vars.inputMapAt(opt, input, pos), 1);
         try cnf.end();
 
         // At most one position is mapped for each input
         for (0..opt.area()) |rhs| {
             for (0..rhs) |lhs| {
-                const a = vars.input_map.at(lhs + input_off);
-                const b = vars.input_map.at(rhs + input_off);
+                const a = vars.inputMapAt(opt, input, lhs);
+                const b = vars.inputMapAt(opt, input, rhs);
                 try cnf.clause(&.{ a, b }, &.{ 0, 0 });
             }
         }
@@ -1304,21 +1301,17 @@ fn outputMapCardinality(
     vars: *const Variables,
     opt: *const Options,
 ) !void {
-    for (0..opt.output_count) |output_idx| {
-        const output_off = output_idx * opt.area();
-
+    for (0..opt.output_count) |out| {
         // At least one position is mapped for each output
-        for (0..opt.area()) |pos| {
-            const output = vars.output_map.at(pos + output_off);
-            try cnf.part(output, 1);
-        }
+        for (0..opt.area()) |pos|
+            try cnf.part(vars.outputMapAt(opt, out, pos), 1);
         try cnf.end();
 
         // At most one position is mapped for each output
         for (0..opt.area()) |rhs| {
             for (0..rhs) |lhs| {
-                const a = vars.output_map.at(lhs + output_off);
-                const b = vars.output_map.at(rhs + output_off);
+                const a = vars.outputMapAt(opt, out, lhs);
+                const b = vars.outputMapAt(opt, out, rhs);
                 try cnf.clause(&.{ a, b }, &.{ 0, 0 });
             }
         }
@@ -1333,12 +1326,9 @@ fn inputOverlap(
 ) !void {
     for (0..opt.input_count) |lhs_idx| {
         for (0..lhs_idx) |rhs_idx| {
-            const lhs_off = lhs_idx * opt.area();
-            const rhs_off = rhs_idx * opt.area();
-
             for (0..opt.area()) |pos| {
-                const lhs = vars.input_map.at(lhs_off + pos);
-                const rhs = vars.input_map.at(rhs_off + pos);
+                const lhs = vars.inputMapAt(opt, lhs_idx, pos);
+                const rhs = vars.inputMapAt(opt, rhs_idx, pos);
                 try cnf.clause(&.{ lhs, rhs }, &.{ 0, 0 });
             }
         }
@@ -1353,12 +1343,9 @@ fn outputOverlap(
 ) !void {
     for (0..opt.output_count) |lhs_idx| {
         for (0..lhs_idx) |rhs_idx| {
-            const lhs_off = lhs_idx * opt.area();
-            const rhs_off = rhs_idx * opt.area();
-
             for (0..opt.area()) |pos| {
-                const lhs = vars.output_map.at(pos + lhs_off);
-                const rhs = vars.output_map.at(pos + rhs_off);
+                const lhs = vars.outputMapAt(opt, lhs_idx, pos);
+                const rhs = vars.outputMapAt(opt, rhs_idx, pos);
                 try cnf.clause(&.{ lhs, rhs }, &.{ 0, 0 });
             }
         }
@@ -1392,11 +1379,9 @@ fn blockPowered(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const offset = state * opt.area() + pos;
-
             const b = vars.block.at(pos);
-            const p = vars.block_on.at(offset);
-            const o = vars.override_on.at(offset);
+            const p = vars.blockOnAt(opt, state, pos);
+            const o = vars.overrideOnAt(opt, state, pos);
 
             // ---------------------- forward implication - block is powered on
 
@@ -1459,10 +1444,8 @@ fn torchPowered(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const offset = state * opt.area() + pos;
-
             const t = vars.torch.at(pos);
-            const p = vars.torch_on.at(offset);
+            const p = vars.torchOnAt(opt, state, pos);
 
             // ------------------------------------------ BACKWARDS IMPLICATION
             // This cell cannot be powered if it is not a torch itself...
@@ -1470,14 +1453,14 @@ fn torchPowered(
 
             for (0..4) |dir| {
                 if (cardinal(opt, pos, dir)) |off| {
-                    const block_on = vars.block_on.at(off);
-                    const torch = vars.facingTorchAt((dir + 2) % 4, pos);
+                    const b = vars.blockOnAt(opt, state, off);
+                    const f_t = vars.facingTorchAt((dir + 2) % 4, pos);
                     // ---------------------------------- BACKWARDS IMPLICATION
                     // If torch, If block is on, then torch is not powered
-                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 0, 0 });
+                    try cnf.clause(&.{ f_t, b, p }, &.{ 0, 0, 0 });
                     // ----------------------------------- FORWARDS IMPLICATION
                     // If torch, If block is off, then torch is powered
-                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 1, 1 });
+                    try cnf.clause(&.{ f_t, b, p }, &.{ 0, 1, 1 });
                 }
             }
         }
@@ -1516,39 +1499,30 @@ fn inputOverrideOn(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const ovr_off = state * opt.area();
-            const override = vars.override_on.at(ovr_off + pos);
+            const o = vars.overrideOnAt(opt, state, pos);
 
-            // ********************** forward implication - overridden to be on
+            // ---------------------- FORWARD IMPLICATION - overridden to be on
 
             // For every single input, if the state of that input is supposed
             // to be TRUE, then whether the current cell is that input's
             // position will imply that the override is TRUE.
 
-            for (0..opt.input_count) |inp| {
-                const inp_off = inp * opt.area() + pos;
-                const is_input = vars.input_map.at(inp_off);
-                if (inputValue(state, inp) == 1) {
-                    try cnf.bitimp(is_input, override);
-                }
-            }
+            for (0..opt.input_count) |inp|
+                if (inputValue(state, inp) == 1)
+                    try cnf.bitimp(vars.inputMapAt(opt, inp, pos), o);
 
-            // ***************** backward implication - not overridden to be on
+            // ----------------- BACKWARD IMPLICATION - not overridden to be on
 
             // The override is false if and only if every single input which is
             // true does not reside at the current cell. This is the same as
             // encoding a single CNF clause where either the override is FALSE,
             // or each input (if it is true in this state) is at this position.
 
-            try cnf.part(override, 0);
+            try cnf.part(o, 0);
 
-            for (0..opt.input_count) |inp| {
-                const inp_off = inp * opt.area() + pos;
-                const is_input = vars.input_map.at(inp_off);
-                if (inputValue(state, inp) == 1) {
-                    try cnf.part(is_input, 1);
-                }
-            }
+            for (0..opt.input_count) |inp|
+                if (inputValue(state, inp) == 1)
+                    try cnf.part(vars.inputMapAt(opt, inp, pos), 1);
 
             try cnf.end();
         }
@@ -1563,51 +1537,38 @@ fn inputOutputConstrainOff(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const c_off_offset = state * opt.area() + pos;
-            const constrain = vars.constrain_off.at(c_off_offset);
+            const c = vars.constrainOffAt(opt, state, pos);
 
-            // ******************** forward implication - constrained to be off
+            // -------------------- FORWARD IMPLICATION - constrained to be off
 
             // For every single input, if the state of that input is supposed
             // to be FALSE, then if it is *that* input implies the constraint.
 
-            for (0..opt.input_count) |inp| {
-                const is_input = vars.input_map.at(pos + inp * opt.area());
-                if (inputValue(state, inp) == 0) {
-                    try cnf.bitimp(is_input, constrain);
-                }
-            }
+            for (0..opt.input_count) |inp|
+                if (inputValue(state, inp) == 0)
+                    try cnf.bitimp(vars.inputMapAt(opt, inp, pos), c);
 
             // For every single output, if the state of that output is supposed
             // to be FALSE, then if it is *that* output implies the constraint.
 
-            for (0..opt.output_count) |out| {
-                const is_output = vars.output_map.at(pos + out * opt.area());
-                if (outputValue(opt, state, out) == 0) {
-                    try cnf.bitimp(is_output, constrain);
-                }
-            }
+            for (0..opt.output_count) |out|
+                if (outputValue(opt, state, out) == 0)
+                    try cnf.bitimp(vars.outputMapAt(opt, out, pos), c);
 
-            // *************** backward implication - not constrained to be off
+            // --------------- BACKWARD IMPLICATION - not constrained to be off
 
             // EITHER: the cell is not constrained to be off
-            try cnf.part(constrain, 0);
+            try cnf.part(c, 0);
 
             // OR: there is an input and it is powered off
-            for (0..opt.input_count) |inp| {
-                const is_input = vars.input_map.at(pos + inp * opt.area());
-                if (inputValue(state, inp) == 0) {
-                    try cnf.part(is_input, 1);
-                }
-            }
+            for (0..opt.input_count) |inp|
+                if (inputValue(state, inp) == 0)
+                    try cnf.part(vars.inputMapAt(opt, inp, pos), 1);
 
             // OR: there is an output and it is powered off
-            for (0..opt.output_count) |out| {
-                const is_output = vars.output_map.at(pos + out * opt.area());
-                if (outputValue(opt, state, out) == 0) {
-                    try cnf.part(is_output, 1);
-                }
-            }
+            for (0..opt.output_count) |out|
+                if (outputValue(opt, state, out) == 0)
+                    try cnf.part(vars.outputMapAt(opt, out, pos), 1);
 
             try cnf.end();
         }
@@ -1622,33 +1583,26 @@ fn outputConstrainOn(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const c_on_offset = state * opt.area() + pos;
-            const constrain = vars.constrain_on.at(c_on_offset);
+            const c = vars.constrainOnAt(opt, state, pos);
 
             // --------------------- forward implication - constrained to be on
 
             // For every single output, if the state of that output is supposed
             // to be TRUE, then the power is implied by if that cell is output.
 
-            for (0..opt.output_count) |out| {
-                const is_output = vars.output_map.at(pos + out * opt.area());
-                if (outputValue(opt, state, out) == 1) {
-                    try cnf.bitimp(is_output, constrain);
-                }
-            }
+            for (0..opt.output_count) |out|
+                if (outputValue(opt, state, out) == 1)
+                    try cnf.bitimp(vars.outputMapAt(opt, out, pos), c);
 
             // ---------------- backward implication - not constrained to be on
 
             // EITHER: the cell is not constrained to be on
-            try cnf.part(constrain, 0);
+            try cnf.part(c, 0);
 
             // OR: there is an output and it is powered on
-            for (0..opt.output_count) |out| {
-                const is_output = vars.output_map.at(pos + out * opt.area());
-                if (outputValue(opt, state, out) == 1) {
-                    try cnf.part(is_output, 1);
-                }
-            }
+            for (0..opt.output_count) |out|
+                if (outputValue(opt, state, out) == 1)
+                    try cnf.part(vars.outputMapAt(opt, out, pos), 1);
 
             try cnf.end();
         }
