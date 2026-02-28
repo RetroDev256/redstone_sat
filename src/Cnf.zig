@@ -235,27 +235,102 @@ pub fn bitop3(self: *@This(), a: u64, b: u64, c: u64, d: u64, t: [8]u1) !void {
 // ----------------------------------------------------------------- ARITHMETIC
 
 /// bitwise half adder, a + b = s + c * 2
-pub fn halfadd(self: *@This(), a: u64, b: u64, s: u64, c: u64) !void {
-    try self.bitop2(a, b, s, .{ 0, 1, 1, 0 });
-    try self.bitop2(a, b, c, .{ 0, 0, 0, 1 });
+pub fn halfadd(self: *@This(), a: u64, b: u64, c: u64, s: u64) !void {
+    // a b | c s
+    // ----+----
+    // 0 0 | 0 0
+    // 1 0 | 0 1
+    // 0 1 | 0 1
+    // 1 1 | 1 0
+
+    try self.clause(&.{ a, c }, &.{ 1, 0 }); // 0 + x = carry x
+    try self.clause(&.{ b, c }, &.{ 1, 0 }); // x + 0 = carry x
+    try self.clause(&.{ a, b, c }, &.{ 0, 0, 1 }); // 1 + 1 = carry x
+
+    try self.clause(&.{ c, s }, &.{ 0, 0 }); // carry 1 -> sum 0
+    try self.clause(&.{ a, b, s }, &.{ 1, 1, 0 }); // 0 + 0 = sum 0
+    try self.clause(&.{ a, b, s }, &.{ 1, 0, 1 }); // 0 + 1 = sum 1
+    try self.clause(&.{ a, b, s }, &.{ 0, 1, 1 }); // 1 + 0 = sum 1
+
 }
 
 /// bitwise half subtractor, a - b = s - o * 2
-pub fn halfsub(self: *@This(), a: u64, b: u64, s: u64, o: u64) !void {
-    try self.bitop2(a, b, s, .{ 0, 1, 1, 0 });
-    try self.bitop2(a, b, o, .{ 0, 1, 0, 0 });
+pub fn halfsub(self: *@This(), a: u64, b: u64, o: u64, s: u64) !void {
+    // a b | o s
+    // ----+----
+    // 0 0 | 0 0
+    // 0 1 | 1 1
+    // 1 0 | 0 1
+    // 1 1 | 0 0
+
+    try self.clause(&.{ a, o }, &.{ 0, 0 }); // 1-x -> borrow 0
+    try self.clause(&.{ a, b, o }, &.{ 1, 1, 0 }); // 0-0 -> borrow 0
+    try self.clause(&.{ a, b, o }, &.{ 1, 0, 1 }); // 0-1 -> borrow 1
+
+    try self.clause(&.{ o, s }, &.{ 0, 1 }); // borrow 1 -> sum 1
+    try self.clause(&.{ a, b, s }, &.{ 1, 1, 0 }); // 0-0 -> sum 0
+    try self.clause(&.{ a, b, s }, &.{ 0, 1, 1 }); // 1-0 -> sum 1
+    try self.clause(&.{ a, b, s }, &.{ 0, 0, 0 }); // 1-1 -> sum 0
 }
 
 /// bitwise full adder, a + b + i = s + c * 2
-pub fn fulladd(self: *@This(), a: u64, b: u64, i: u64, s: u64, c: u64) !void {
-    try self.bitop3(a, b, i, s, .{ 0, 1, 1, 0, 1, 0, 0, 1 });
-    try self.bitop3(a, b, i, c, .{ 0, 0, 0, 1, 0, 0, 1, 1 });
+pub fn fulladd(self: *@This(), a: u64, b: u64, i: u64, c: u64, s: u64) !void {
+    // a b i | c s
+    // ------+----
+    // 0 0 0 | 0 0
+    // 0 0 1 | 0 1
+    // 0 1 0 | 0 1
+    // 0 1 1 | 1 0
+    // 1 0 0 | 0 1
+    // 1 0 1 | 1 0
+    // 1 1 0 | 1 0
+    // 1 1 1 | 1 1
+
+    try self.clause(&.{ a, b, c }, &.{ 1, 1, 0 }); // 0+0+x -> carry 0
+    try self.clause(&.{ a, i, c }, &.{ 1, 1, 0 }); // 0+x+0 -> carry 0
+    try self.clause(&.{ b, i, c }, &.{ 1, 1, 0 }); // x+0+0 -> carry 0
+    try self.clause(&.{ b, i, c }, &.{ 0, 0, 1 }); // x+1+1 -> carry 1
+    try self.clause(&.{ a, i, c }, &.{ 0, 0, 1 }); // 1+x+1 -> carry 1
+    try self.clause(&.{ a, b, c }, &.{ 0, 0, 1 }); // 1+1+x -> carry 1
+
+    try self.clause(&.{ a, c, s }, &.{ 1, 0, 0 }); // 0+x+x & carry 1 -> sum 0
+    try self.clause(&.{ b, c, s }, &.{ 1, 0, 0 }); // x+0+x & carry 1 -> sum 0
+    try self.clause(&.{ i, c, s }, &.{ 1, 0, 0 }); // x+x+0 & carry 1 -> sum 0
+    try self.clause(&.{ i, c, s }, &.{ 0, 1, 1 }); // x+x+1 & carry 0 -> sum 1
+    try self.clause(&.{ b, c, s }, &.{ 0, 1, 1 }); // x+1+x & carry 0 -> sum 1
+    try self.clause(&.{ a, c, s }, &.{ 0, 1, 1 }); // 1+x+x & carry 0 -> sum 1
+    try self.clause(&.{ a, b, i, s }, &.{ 1, 1, 1, 0 }); // 0+0+0 -> sum 0
+    try self.clause(&.{ a, b, i, s }, &.{ 0, 0, 0, 1 }); // 1+1+1 -> sum 1
 }
 
 /// bitwise full subtractor, a - b - i = s - o * 2
-pub fn fullsub(self: *@This(), a: u64, b: u64, i: u64, s: u64, o: u64) !void {
-    try self.bitop3(a, b, i, s, .{ 0, 1, 1, 0, 1, 0, 0, 1 });
-    try self.bitop3(a, b, i, o, .{ 0, 1, 1, 1, 0, 0, 0, 1 });
+pub fn fullsub(self: *@This(), a: u64, b: u64, i: u64, o: u64, s: u64) !void {
+    // a b i | o s
+    // ------+----
+    // 0 0 0 | 0 0
+    // 0 0 1 | 1 1
+    // 0 1 0 | 1 1
+    // 0 1 1 | 1 0
+    // 1 0 0 | 0 1
+    // 1 0 1 | 0 0
+    // 1 1 0 | 0 0
+    // 1 1 1 | 1 1
+
+    try self.clause(&.{ a, b, o }, &.{ 0, 1, 0 }); // 1-0-x -> borrow 0
+    try self.clause(&.{ a, i, o }, &.{ 0, 1, 0 }); // 1-x-0 -> borrow 0
+    try self.clause(&.{ b, i, o }, &.{ 1, 1, 0 }); // x-0-0 -> borrow 0
+    try self.clause(&.{ b, i, o }, &.{ 0, 0, 1 }); // x-1-1 -> borrow 1
+    try self.clause(&.{ a, i, o }, &.{ 1, 0, 1 }); // 0-x-1 -> borrow 1
+    try self.clause(&.{ a, b, o }, &.{ 1, 0, 1 }); // 0-1-x -> borrow 1
+
+    try self.clause(&.{ a, o, s }, &.{ 0, 0, 1 }); // 1-x-x & borrow 1 -> sum 1
+    try self.clause(&.{ b, o, s }, &.{ 0, 1, 0 }); // x-1-x & borrow 0 -> sum 0
+    try self.clause(&.{ i, o, s }, &.{ 0, 1, 0 }); // x-x-1 & borrow 0 -> sum 0
+    try self.clause(&.{ i, o, s }, &.{ 1, 0, 1 }); // x-x-0 & borrow 1 -> sum 1
+    try self.clause(&.{ b, o, s }, &.{ 1, 0, 1 }); // x-0-x & borrow 1 -> sum 1
+    try self.clause(&.{ a, o, s }, &.{ 1, 1, 0 }); // 0-x-x & borrow 0 -> sum 0
+    try self.clause(&.{ a, b, i, s }, &.{ 1, 0, 0, 0 }); // 0-1-1 -> sum 0
+    try self.clause(&.{ a, b, i, s }, &.{ 0, 1, 1, 1 }); // 1-0-0 -> sum 1
 }
 
 // ----------------------------------------------------------- UNARY OPERATIONS
