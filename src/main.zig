@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const Io = std.Io;
 
 const Cnf = @import("Cnf.zig");
@@ -134,7 +135,7 @@ const Options = struct {
     // enforce acyclic graph with a unary counter
     transition_bits: u64,
     // redstone dust max signal strength
-    max_signal_strength: ?u64,
+    max_signal_strength: u64,
 
     fn init(gpa: Allocator, source: [:0]const u8) !@This() {
         @setEvalBranchQuota(10_000); // for fromSliceAlloc
@@ -178,20 +179,14 @@ const Variables = struct {
     dust: Bits, // position is dust
     torch: Bits, // position is torch
     block: Bits, // position is block
-    n_redirect: Bits, // redirection source to the north
-    e_redirect: Bits, // redirection source to the east
-    s_redirect: Bits, // redirection source to the south
-    w_redirect: Bits, // redirection source to the west
-    n_connect: Bits, // dust connected to the north
-    e_connect: Bits, // dust connected to the east
-    s_connect: Bits, // dust connected to the south
-    w_connect: Bits, // dust connected to the west
-    n_torch: Bits, // position is north facing torch
-    e_torch: Bits, // position is east facing torch
-    s_torch: Bits, // position is south facing torch
-    w_torch: Bits, // position is west facing torch
     input: Bits, // position is input
     output: Bits, // position is output
+
+    // [direction: 4 (NESW)]
+    // * [position: opt.area()]
+    facing_redirect: [4]Bits, // redirection source to the cardinal directions
+    facing_connect: [4]Bits, // dust connected to the cardinal directions
+    facing_torch: [4]Bits, // torch facing in a particular direction
 
     // [input: opt.input_count]
     // * [position: opt.area()]
@@ -209,7 +204,6 @@ const Variables = struct {
     // * [position: opt.area()]
     torch_on: Bits, // torch is powered
     block_on: Bits, // block is powered
-    dust_on: Bits, // dust is powered
     override_on: Bits, // *override* something to be on
     constrain_on: Bits, // *constrain* something to be on
     constrain_off: Bits, // *constrain* something to be off
@@ -223,27 +217,34 @@ const Variables = struct {
         const area = opt.area();
         const states = opt.states();
         const seg_bits = opt.transition_bits;
-        const power_bits = opt.max_signal_strength orelse 0;
+        const power_bits = opt.max_signal_strength;
 
         return .{
             .air = cnf.alloc(area),
             .dust = cnf.alloc(area),
             .torch = cnf.alloc(area),
             .block = cnf.alloc(area),
-            .n_redirect = cnf.alloc(area),
-            .e_redirect = cnf.alloc(area),
-            .s_redirect = cnf.alloc(area),
-            .w_redirect = cnf.alloc(area),
-            .n_connect = cnf.alloc(area),
-            .e_connect = cnf.alloc(area),
-            .s_connect = cnf.alloc(area),
-            .w_connect = cnf.alloc(area),
-            .n_torch = cnf.alloc(area),
-            .e_torch = cnf.alloc(area),
-            .s_torch = cnf.alloc(area),
-            .w_torch = cnf.alloc(area),
             .input = cnf.alloc(area),
             .output = cnf.alloc(area),
+
+            .facing_redirect = .{
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+            },
+            .facing_connect = .{
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+            },
+            .facing_torch = .{
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+                cnf.alloc(area),
+            },
 
             .input_map = cnf.alloc(opt.input_count * area),
 
@@ -253,13 +254,73 @@ const Variables = struct {
 
             .torch_on = cnf.alloc(states * area),
             .block_on = cnf.alloc(states * area),
-            .dust_on = cnf.alloc(states * area),
             .override_on = cnf.alloc(states * area),
             .constrain_on = cnf.alloc(states * area),
             .constrain_off = cnf.alloc(states * area),
 
             .strength = cnf.alloc(states * area * power_bits),
         };
+    }
+
+    fn facingRedirectAt(self: *const @This(), dir: u64, pos: u64) u64 {
+        assert(dir < 4);
+        return self.facing_redirect[dir].at(pos);
+    }
+
+    fn facingConnectAt(self: *const @This(), dir: u64, pos: u64) u64 {
+        assert(dir < 4);
+        return self.facing_connect[dir].at(pos);
+    }
+
+    fn facingTorchAt(self: *const @This(), dir: u64, pos: u64) u64 {
+        assert(dir < 4);
+        return self.facing_torch[dir].at(pos);
+    }
+
+    fn inputMapAt(self: *const @This(), opt: *const Options, input: u64, pos: u64) u64 {
+        assert(input < opt.input_count);
+        return self.input_map.at(input * opt.area() + pos);
+    }
+
+    fn outputMapAt(self: *const @This(), opt: *const Options, output: u64, pos: u64) u64 {
+        assert(output < opt.output_count);
+        return self.output_map.at(output * opt.area() + pos);
+    }
+
+    fn segmentAt(self: *const @This(), opt: *const Options, pos: u64) Bits {
+        const index = self.segment.at(pos * opt.transition_bits);
+        return .init(index, opt.transition_bits);
+    }
+
+    fn torchOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
+        assert(state < opt.states());
+        return self.torch_on.at(state * opt.area() + pos);
+    }
+
+    fn blockOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
+        assert(state < opt.states());
+        return self.block_on.at(state * opt.area() + pos);
+    }
+
+    fn overrideOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
+        assert(state < opt.states());
+        return self.override_on.at(state * opt.area() + pos);
+    }
+
+    fn constrainOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
+        assert(state < opt.states());
+        return self.constrain_on.at(state * opt.area() + pos);
+    }
+
+    fn constrainOffAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
+        assert(state < opt.states());
+        return self.constrain_off.at(state * opt.area() + pos);
+    }
+
+    fn strengthAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) Bits {
+        assert(state < opt.states());
+        const offset = (state * opt.area() + pos) * opt.max_signal_strength;
+        return .init(self.strength.at(offset), opt.max_signal_strength);
     }
 };
 
@@ -296,8 +357,9 @@ fn encodeMain(
         "dustConnection",
         "inputBlockType",
         "inputOverrideOn",
+        "dustCardinality",
         "outputBlockType",
-        "torchPowersDust",
+        "torchCardinality",
         "blockSingularity",
         "inputCardinality",
         "torchDistinctness",
@@ -307,8 +369,12 @@ fn encodeMain(
         "torchDustConnection",
         "blockDustConnection",
         "inputMapCardinality",
+        "eastTorchCardinality",
+        "westTorchCardinality",
         "blockTorchConnection",
         "outputMapCardinality",
+        "northTorchCardinality",
+        "southTorchCardinality",
         "dustRedirectionSources",
         "inputOutputConstrainOff",
         "dustPowerStrengthPropagation",
@@ -430,14 +496,14 @@ fn decodeMain(
                 .{ is_air, vars.air },
                 .{ is_dust, vars.dust },
                 .{ is_block, vars.block },
-                .{ is_n_connect, vars.n_connect },
-                .{ is_e_connect, vars.e_connect },
-                .{ is_s_connect, vars.s_connect },
-                .{ is_w_connect, vars.w_connect },
-                .{ is_n_torch, vars.n_torch },
-                .{ is_e_torch, vars.e_torch },
-                .{ is_s_torch, vars.s_torch },
-                .{ is_w_torch, vars.w_torch },
+                .{ is_n_connect, vars.facing_connect[0] },
+                .{ is_e_connect, vars.facing_connect[1] },
+                .{ is_s_connect, vars.facing_connect[2] },
+                .{ is_w_connect, vars.facing_connect[3] },
+                .{ is_n_torch, vars.facing_torch[0] },
+                .{ is_e_torch, vars.facing_torch[1] },
+                .{ is_s_torch, vars.facing_torch[2] },
+                .{ is_w_torch, vars.facing_torch[3] },
                 .{ is_input, vars.input },
                 .{ is_output, vars.output },
             }) |list| {
@@ -512,7 +578,7 @@ const Color = enum {
 
 const Display = struct { Color, [3][]const u8 };
 fn writeDisplayRow(self: Display, w: *Io.Writer, row: usize) !void {
-    if (row >= 3) unreachable;
+    assert(row < 3);
     try w.writeAll(self[0].code());
     try w.writeAll(self[1][row]);
     try w.writeAll(Color.reset);
@@ -548,67 +614,21 @@ const s_torch_display: Display = .{ .yellow, .{ "  ▐▌  ", "  𜷂𜷖  ", " 
 const w_torch_display: Display = .{ .yellow, .{ "      ", "  𜷂𜷖𜴳𜴳", "      " } };
 const unknown_display: Display = .{ .gray, .{ "? ? ? ", " ? ? ?", "? ? ? " } };
 
-// Cardinal directions for north, east, south, and west
-const Dir = enum { n, e, s, w };
-
-/// Given a cardinal direction, this function finds the opposite direction.
-fn opposite(comptime dir: Dir) Dir {
-    return switch (dir) {
-        .n => .s,
-        .e => .w,
-        .s => .n,
-        .w => .e,
-    };
-}
-
 /// Return a flat index representing an offset position, given an original
 /// position, cardinal direction, and options - for the width of the circuit
-fn cardinal(opt: *const Options, pos: u64, comptime dir: Dir) ?u64 {
+fn cardinal(opt: *const Options, pos: u64, dir: u64) ?u64 {
     const x = pos % opt.width;
     const z = pos / opt.width;
 
-    return switch (dir) {
+    return switch (@as(u2, @intCast(dir))) {
         // We must be after the first row if we are offset north
-        .n => if (z > 0) pos - opt.width else null,
+        0 => if (z > 0) pos - opt.width else null,
         // We must be before the last column if we are offset east
-        .e => if (x < opt.width - 1) pos + 1 else null,
+        1 => if (x < opt.width - 1) pos + 1 else null,
         // We must be before the last row if we are offset south
-        .s => if (z < opt.length - 1) pos + opt.width else null,
+        2 => if (z < opt.length - 1) pos + opt.width else null,
         // we must be after the first column if we are offset west
-        .w => if (x > 0) pos - 1 else null,
-    };
-}
-
-/// Return a torch facing a certain cardinal direction, given the position of
-/// the torch, the variables in the system, and a comptime-known direction
-fn facingTorch(vars: *const Variables, pos: u64, comptime dir: Dir) u64 {
-    return switch (dir) {
-        .n => vars.n_torch.at(pos),
-        .e => vars.e_torch.at(pos),
-        .s => vars.s_torch.at(pos),
-        .w => vars.w_torch.at(pos),
-    };
-}
-
-/// Return a certain connection of a block of dust - that is, whether this dust
-/// both exists, and is connected (powered by or can power) to that direction.
-fn connectedDust(vars: *const Variables, pos: u64, comptime dir: Dir) u64 {
-    return switch (dir) {
-        .n => vars.n_connect.at(pos),
-        .e => vars.e_connect.at(pos),
-        .s => vars.s_connect.at(pos),
-        .w => vars.w_connect.at(pos),
-    };
-}
-
-/// Return whether a cardinal block will redirect dust in the current position.
-/// This function takes the variables, position of the dust, and direction.
-fn cardinalRedirect(vars: *const Variables, pos: u64, comptime dir: Dir) u64 {
-    return switch (dir) {
-        .n => vars.n_redirect.at(pos),
-        .e => vars.e_redirect.at(pos),
-        .s => vars.s_redirect.at(pos),
-        .w => vars.w_redirect.at(pos),
+        3 => if (x > 0) pos - 1 else null,
     };
 }
 
@@ -649,10 +669,10 @@ fn torchDistinctness(
 ) !void {
     for (0..opt.area()) |pos| {
         const t = vars.torch.at(pos);
-        const n = vars.n_torch.at(pos);
-        const e = vars.e_torch.at(pos);
-        const s = vars.s_torch.at(pos);
-        const w = vars.w_torch.at(pos);
+        const n = vars.facingTorchAt(0, pos);
+        const e = vars.facingTorchAt(1, pos);
+        const s = vars.facingTorchAt(2, pos);
+        const w = vars.facingTorchAt(3, pos);
 
         // n, e, s, w, imply t
         try cnf.bitimp(n, t);
@@ -685,10 +705,9 @@ fn torchBlockSupports(
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
-        inline for (.{ .n, .e, .w, .s }) |facing| {
-            const backward = comptime opposite(facing);
-            const torch = facingTorch(vars, pos, facing);
-            if (cardinal(opt, pos, backward)) |north| {
+        for (0..4) |dir| {
+            const torch = vars.facingTorchAt(dir, pos);
+            if (cardinal(opt, pos, (dir + 2) % 4)) |north| {
                 const block = vars.block.at(north);
                 try cnf.bitimp(torch, block);
             } else {
@@ -714,9 +733,9 @@ fn blockTorchConnection(
             try cnf.part(vars.output.at(pos), 1);
 
         // OR: there is a torch connected to the block
-        inline for (.{ .n, .e, .s, .w }) |dir| {
+        for (0..4) |dir| {
             if (cardinal(opt, pos, dir)) |off| {
-                try cnf.part(facingTorch(vars, off, dir), 1);
+                try cnf.part(vars.facingTorchAt(dir, off), 1);
             }
         }
 
@@ -742,7 +761,7 @@ fn torchDustConnection(
             try cnf.part(vars.output.at(pos), 1);
 
         // OR: There is a dust offset from the torch
-        inline for (.{ .n, .e, .s, .w }) |dir| {
+        for (0..4) |dir| {
             if (cardinal(opt, pos, dir)) |off| {
                 try cnf.part(vars.dust.at(off), 1);
             }
@@ -770,9 +789,9 @@ fn blockDustConnection(
             try cnf.part(vars.input.at(pos), 1);
 
         // OR: there is a connected dust offset from the block
-        inline for (.{ .n, .e, .s, .w }) |dir| {
-            if (cardinal(opt, pos, opposite(dir))) |off| {
-                try cnf.part(connectedDust(vars, off, dir), 1);
+        for (0..4) |dir| {
+            if (cardinal(opt, pos, (dir + 2) % 4)) |off| {
+                try cnf.part(vars.facingConnectAt(dir, off), 1);
             }
         }
 
@@ -789,7 +808,7 @@ fn inputCardinality(
     opt: *const Options,
 ) !void {
     switch (opt.input_count) {
-        0 => unreachable, // checked in Options.init()
+        0 => assert(false), // checked in Options.init()
         1 => {
             // At least one of the blocks is an input
             for (0..opt.area()) |pos|
@@ -820,7 +839,7 @@ fn outputCardinality(
     opt: *const Options,
 ) !void {
     switch (opt.output_count) {
-        0 => unreachable, // checked in Options.init()
+        0 => assert(false), // checked in Options.init()
         1 => {
             // At least one of the blocks is an output
             for (0..opt.area()) |pos|
@@ -844,6 +863,238 @@ fn outputCardinality(
     }
 }
 
+// restrict the number of dusts
+fn dustCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_dust orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero dust means that all are not dust
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.dust.at(pos));
+        },
+        1 => {
+            // At least one of the blocks is a dust
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.dust.at(pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a dust
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.dust.at(lhs);
+                    const b = vars.dust.at(rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const cardinality = try cnf.unaryTotalize(vars.dust);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
+// restrict the number of torches
+fn torchCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_torch orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero torch means that all are not torch
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.torch.at(pos));
+        },
+        1 => {
+            // At least one of the blocks is a torch
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.torch.at(pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a torch
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.torch.at(lhs);
+                    const b = vars.torch.at(rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const cardinality = try cnf.unaryTotalize(vars.torch);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
+// restrict the number of north torches
+fn northTorchCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_n_torch orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero torch means that all are not torch
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.facingTorchAt(0, pos));
+        },
+        1 => {
+            // At least one of the blocks is a torch
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.facingTorchAt(0, pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a torch
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.facingTorchAt(0, lhs);
+                    const b = vars.facingTorchAt(0, rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const n_torch: Bits = vars.facing_torch[0];
+            const cardinality = try cnf.unaryTotalize(n_torch);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
+// restrict the number of east torches
+fn eastTorchCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_e_torch orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero torch means that all are not torch
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.facingTorchAt(1, pos));
+        },
+        1 => {
+            // At least one of the blocks is a torch
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.facingTorchAt(1, pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a torch
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.facingTorchAt(1, lhs);
+                    const b = vars.facingTorchAt(1, rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const e_torch: Bits = vars.facing_torch[1];
+            const cardinality = try cnf.unaryTotalize(e_torch);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
+// restrict the number of south torches
+fn southTorchCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_s_torch orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero torch means that all are not torch
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.facingTorchAt(2, pos));
+        },
+        1 => {
+            // At least one of the blocks is a torch
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.facingTorchAt(2, pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a torch
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.facingTorchAt(2, lhs);
+                    const b = vars.facingTorchAt(2, rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const n_torch: Bits = vars.facing_torch[2];
+            const cardinality = try cnf.unaryTotalize(n_torch);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
+// restrict the number of west torches
+fn westTorchCardinality(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // We don't need to handle unknown maximum
+    const count = opt.max_w_torch orelse return;
+
+    switch (count) {
+        0 => {
+            // Zero torch means that all are not torch
+            for (0..opt.area()) |pos|
+                try cnf.bitfalse(vars.facingTorchAt(3, pos));
+        },
+        1 => {
+            // At least one of the blocks is a torch
+            for (0..opt.area()) |pos|
+                try cnf.part(vars.facingTorchAt(3, pos), 1);
+            try cnf.end();
+
+            // At most one of the blocks is a torch
+            for (0..opt.area()) |lhs| {
+                for (0..lhs) |rhs| {
+                    const a = vars.facingTorchAt(3, lhs);
+                    const b = vars.facingTorchAt(3, rhs);
+                    try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+                }
+            }
+        },
+        else => {
+            // Count the number bits and constrain to the count
+            const w_torch: Bits = vars.facing_torch[3];
+            const cardinality = try cnf.unaryTotalize(w_torch);
+            try cnf.unaryConstrainLEVal(cardinality, count);
+        },
+    }
+}
+
 // constrain cardinal dust redirection sources
 fn dustRedirectionSources(
     cnf: *Cnf,
@@ -851,9 +1102,9 @@ fn dustRedirectionSources(
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
-        inline for (.{ .n, .e, .s, .w }) |dir| {
+        for (0..4) |dir| {
             // The direction that we will be redirecting
-            const redirect = cardinalRedirect(vars, pos, dir);
+            const redirect = vars.facingRedirectAt(dir, pos);
 
             if (cardinal(opt, pos, dir)) |off| {
                 // The direction we are observing is in bounds, so it only will
@@ -905,20 +1156,20 @@ fn dustConnection(
         // s_r -> whether the south block can redirect
         // w_r -> whether the west block can redirect
 
-        const n_r = vars.n_redirect.at(pos);
-        const e_r = vars.e_redirect.at(pos);
-        const s_r = vars.s_redirect.at(pos);
-        const w_r = vars.w_redirect.at(pos);
+        const n_r = vars.facingRedirectAt(0, pos);
+        const e_r = vars.facingRedirectAt(1, pos);
+        const s_r = vars.facingRedirectAt(2, pos);
+        const w_r = vars.facingRedirectAt(3, pos);
 
         // n_c -> whether the dust connects north
         // e_c -> whether the dust connects east
         // s_c -> whether the dust connects south
         // w_c -> whether the dust connects west
 
-        const n_c = vars.n_connect.at(pos);
-        const e_c = vars.e_connect.at(pos);
-        const s_c = vars.s_connect.at(pos);
-        const w_c = vars.w_connect.at(pos);
+        const n_c = vars.facingConnectAt(0, pos);
+        const e_c = vars.facingConnectAt(1, pos);
+        const s_c = vars.facingConnectAt(2, pos);
+        const w_c = vars.facingConnectAt(3, pos);
 
         // (NOT d) -> (NOT n_c)
         // (NOT d) -> (NOT e_c)
@@ -1153,12 +1404,10 @@ fn blockPowered(
             // are powered on, AND if the current cell is a block, then the
             // current cell must be powered on.
 
-            inline for (.{ .n, .e, .s, .w }) |dir| {
+            for (0..4) |dir| {
                 if (cardinal(opt, pos, dir)) |off| {
-                    const backwards = comptime opposite(dir);
-                    const c_off = state * opt.area() + off;
-                    const d_on = vars.dust_on.at(c_off);
-                    const d_con = connectedDust(vars, off, backwards);
+                    const d_on = vars.strengthAt(opt, state, off).at(0);
+                    const d_con = vars.facingConnectAt((dir + 2) % 4, off);
                     try cnf.clause(&.{ b, d_on, d_con, p }, &.{ 0, 0, 0, 1 });
                 }
             }
@@ -1173,7 +1422,7 @@ fn blockPowered(
             // If not a block, this can't be powered as a block
             try cnf.clause(&.{ b, p }, &.{ 1, 0 });
 
-            inline for (0b0000..0b1111 + 1) |combos| {
+            for (0b0000..0b1111 + 1) |combos| {
                 // EITHER: the block is unpowered
                 try cnf.part(p, 0);
                 // OR: the block is overridden to be powered
@@ -1181,17 +1430,17 @@ fn blockPowered(
                 // OR: the cell is not actually a block
                 try cnf.part(b, 0);
 
-                inline for (&.{ .n, .e, .s, .w }, 0..4) |dir, combo_bit| {
+                for (0..4) |dir| {
                     if (cardinal(opt, pos, dir)) |off| {
-                        if (combos & (1 << combo_bit) != 0) {
+                        if (combos & (@as(u5, 1) << @intCast(dir)) != 0) {
                             // OR: cardinal dust is not connected
-                            try cnf.part(connectedDust(vars, pos, dir), 0);
+                            try cnf.part(vars.facingConnectAt(dir, pos), 0);
                             // OR: cardinal dust is powered on
-                            const c_off = state * opt.area() + off;
-                            try cnf.part(vars.dust_on.at(c_off), 1);
+                            const strength = vars.strengthAt(opt, state, off);
+                            try cnf.part(strength.at(0), 1);
                         } else {
                             // OR: cardinal dust is connected
-                            try cnf.part(connectedDust(vars, pos, dir), 1);
+                            try cnf.part(vars.facingConnectAt(dir, pos), 1);
                         }
                     }
                 }
@@ -1215,32 +1464,20 @@ fn torchPowered(
             const t = vars.torch.at(pos);
             const p = vars.torch_on.at(offset);
 
-            // ************* forward implication - when the torch is powered on
-
-            // Torches are on when their connected blocks are off
-
-            inline for (.{ .n, .e, .s, .w }) |dir| {
-                if (cardinal(opt, pos, dir)) |off| {
-                    const block_on = vars.block_on.at(off);
-                    const backwards = comptime opposite(dir);
-                    const torch = facingTorch(vars, pos, backwards);
-                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 1, 1 });
-                }
-            }
-
-            // *********** backward implication - when the torch is powered off
-
-            // If not a torch, this can't be powered as a torch
+            // ------------------------------------------ BACKWARDS IMPLICATION
+            // This cell cannot be powered if it is not a torch itself...
             try cnf.clause(&.{ t, p }, &.{ 1, 0 });
 
-            // Torches are off when their connected blocks are on
-
-            inline for (.{ .n, .e, .s, .w }) |dir| {
+            for (0..4) |dir| {
                 if (cardinal(opt, pos, dir)) |off| {
                     const block_on = vars.block_on.at(off);
-                    const backwards = comptime opposite(dir);
-                    const torch = facingTorch(vars, pos, backwards);
-                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 0, 1 });
+                    const torch = vars.facingTorchAt((dir + 2) % 4, pos);
+                    // ---------------------------------- BACKWARDS IMPLICATION
+                    // If torch, If block is on, then torch is not powered
+                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 0, 0 });
+                    // ----------------------------------- FORWARDS IMPLICATION
+                    // If torch, If block is off, then torch is powered
+                    try cnf.clause(&.{ torch, block_on, p }, &.{ 0, 1, 1 });
                 }
             }
         }
@@ -1426,60 +1663,40 @@ fn dustPowerStrengthPropagation(
 ) !void {
     for (0..opt.states()) |state| {
         for (0..opt.area()) |pos| {
-            const d_offset = state * opt.area() + pos;
-            const d_on = vars.dust_on.at(d_offset);
-            const d = vars.dust.at(pos);
 
-            if (opt.max_signal_strength) |max_strength| {
-                _ = max_strength;
-                unreachable; // TODO: not yet implemented
-            } else {
-                // Dust power is equal to adjacent dust
-                inline for (&.{ .n, .e, .s, .w }) |dir| {
-                    if (cardinal(opt, pos, dir)) |off| {
-                        const rhs_offset = state * opt.area() + off;
-                        const c_on = vars.dust_on.at(rhs_offset);
-                        const c_d = vars.dust.at(off);
-                        try cnf.clause(&.{ d, c_d, c_on, d_on }, &.{ 0, 0, 0, 1 });
-                        try cnf.clause(&.{ d, c_d, c_on, d_on }, &.{ 0, 0, 1, 0 });
-                    }
-                }
+            // Dust is fully powered by adjacent powered torches
 
-                // override_on and dust implies the dust is powered
-                const o_on = vars.override_on.at(d_offset);
-                try cnf.clause(&.{ o_on, d, d_on }, &.{ 0, 0, 1 });
-
-                // constrain_on and dust implies the dust is powered
-                const c_on = vars.constrain_on.at(d_offset);
-                try cnf.clause(&.{ c_on, d, d_on }, &.{ 0, 0, 1 });
-
-                // constrain_off implies the dust is not powered
-                const c_off = vars.constrain_off.at(d_offset);
-                try cnf.clause(&.{ c_off, d_on }, &.{ 0, 0 });
-            }
-        }
-    }
-}
-
-// torches that are on will power adjacent dust
-fn torchPowersDust(
-    cnf: *Cnf,
-    vars: *const Variables,
-    opt: *const Options,
-) !void {
-    for (0..opt.states()) |state| {
-        for (0..opt.area()) |pos| {
-            const p_offset = state * opt.area() + pos;
-            const p = vars.torch_on.at(p_offset);
-
-            inline for (&.{ .n, .e, .s, .w }) |dir| {
+            for (0..4) |dir| {
                 if (cardinal(opt, pos, dir)) |off| {
+                    // t = Whether the current block is a powered torch
+                    const t = vars.torchOnAt(opt, state, pos);
+                    // d = Whether the current block is a dust block
                     const d = vars.dust.at(off);
-                    const d_off = state * opt.area() + off;
-                    const d_p = vars.dust_on.at(d_off);
-                    try cnf.clause(&.{ p, d, d_p }, &.{ 0, 0, 1 });
+                    // d_p = Whether the current cell is powered dust
+                    const top = opt.max_signal_strength - 1;
+                    const d_p = vars.strengthAt(opt, state, off).at(top);
+                    // ------------------------------------ FORWARD IMPLICATION
+                    // Dust is max strength if it has an adjacent powered torch
+                    try cnf.clause(&.{ t, d, d_p }, &.{ 0, 0, 1 });
                 }
             }
+
+            // const d_offset = state * opt.area() + pos;
+            // const d_on = vars.dust_on.at(d_offset);
+            // const d = vars.dust.at(pos);
+
+            // // override_on and dust implies the dust is powered
+            // const o_on = vars.override_on.at(d_offset);
+            // try cnf.clause(&.{ o_on, d, d_on }, &.{ 0, 0, 1 });
+
+            // // constrain_on and dust implies the dust is powered
+            // const c_on = vars.constrain_on.at(d_offset);
+            // try cnf.clause(&.{ c_on, d, d_on }, &.{ 0, 0, 1 });
+
+            // // constrain_off implies the dust is not powered
+            // const c_off = vars.constrain_off.at(d_offset);
+            // try cnf.clause(&.{ c_off, d_on }, &.{ 0, 0 });
+
         }
     }
 }
