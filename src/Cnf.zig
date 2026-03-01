@@ -333,6 +333,92 @@ pub fn fullsub(self: *@This(), a: u64, b: u64, i: u64, o: u64, s: u64) !void {
     try self.clause(&.{ a, b, i, s }, &.{ 0, 1, 1, 1 }); // 1-0-0 -> sum 1
 }
 
+// ---------------------------------------------------------------- CARDINALITY
+
+pub fn cardinalityOne(self: *@This(), input: Bits, sat: ?u64) !void {
+    assert(input.len > 0); // You can't have 1/0 bits set
+
+    // If we are going to track whether the expression is
+    // sat, we will keep track of <= 1 and >= 1 separately.
+    const le_one = if (sat) |_| self.alloc(1).idx else null;
+    const ge_one = if (sat) |_| self.alloc(1).idx else null;
+
+    var bits: Bits = input;
+    while (bits.len > 1) {
+        // At most one bit is set in adjacent pairs
+        for (0..bits.len / 2) |pair| {
+            // --------------------------------- BACKWARD IMPLICATION OF le_one
+            // EITHER: number of set bits is NOT <= 1
+            if (le_one) |bit| try self.part(bit, 0);
+            // OR: the left bit of the pair is FALSE
+            try self.part(bits.at(pair * 2), 0);
+            // OR: the right bit of the pair is FALSE
+            try self.part(bits.at(pair * 2 + 1), 0);
+            try self.end();
+        }
+
+        // Allocate bits for the next layer
+        const next_count = (bits.len + 1) / 2;
+        var next: Bits = self.alloc(next_count);
+
+        // Carry ORs of working bits to the next layer
+        for (0..bits.len / 2) |pair| {
+            const lhs = bits.at(pair * 2);
+            const rhs = bits.at(pair * 2 + 1);
+            try self.bitor(lhs, rhs, next.at(pair));
+        }
+
+        // Carry any extra bit to the next layer
+        if (bits.len & 1 == 1) {
+            const lhs = bits.at(bits.len - 1);
+            const rhs = next.at(next.len - 1);
+            try self.biteql(lhs, rhs);
+        }
+
+        // Swap the layers
+        bits = next;
+    }
+
+    if (ge_one) |bit| {
+        // -------------------------------------- FORWARD IMPLICATION OF ge_one
+        // EITHER: number of bits set is >= 1
+        try self.part(bit, 1);
+        // OR: there are zero set bits
+        try self.part(bits.at(0), 0);
+        try self.end();
+    }
+
+    // ----------------------------------------- BACKWARD IMPLICATION OF ge_one
+    // EITHER: number of set bits is NOT >= 1
+    if (ge_one) |bit| try self.part(bit, 0);
+    // OR: input cardinality is at least 1
+    for (0..input.len) |off|
+        try self.part(input.at(off), 1);
+    try self.end();
+
+    if (le_one) |bit| {
+        for (0..input.len) |skip| {
+            // ---------------------------------- FORWARD IMPLICATION OF le_one
+            // EITHER: number of set bits is <= 1
+            try self.part(bit, 1);
+            // OR: at least one bit (except skip) is true
+            for (0..input.len) |off| {
+                if (off == skip) continue;
+                try self.part(input.at(off), 1);
+            }
+            try self.end();
+        }
+    }
+
+    if (sat) |bit| {
+        // The solution is satisfied if and only if the number of bits set is
+        // less than or equal to one, and also greater than or equal to one.
+        const le = le_one orelse unreachable;
+        const ge = ge_one orelse unreachable;
+        try self.bitand(le, ge, bit);
+    }
+}
+
 // ----------------------------------------------------------- UNARY OPERATIONS
 
 /// Returns bits that are constrained to be the maximum
