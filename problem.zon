@@ -23,7 +23,7 @@
         },
     },
 
-    // allowed positionsfor inputs
+    // allowed positions for inputs
     .input_mask = .{
         1, 0, 0, 0, 0, 0, 0,
         1, 0, 0, 0, 0, 0, 0,
@@ -33,7 +33,7 @@
         1, 0, 0, 0, 0, 0, 0,
         1, 0, 0, 0, 0, 0, 0,
     },
-    // allowed positionsfor outputs
+    // allowed positions for outputs
     .output_mask = .{
         0, 0, 0, 0, 0, 0, 1,
         0, 0, 0, 0, 0, 0, 1,
@@ -43,11 +43,11 @@
         0, 0, 0, 0, 0, 0, 1,
         0, 0, 0, 0, 0, 0, 1,
     },
-    // allowed positionsfor torches
+    // allowed positions for torches
     .torch_mask = null,
-    // allowed positionsfor blocks
+    // allowed positions for blocks
     .block_mask = null,
-    // allowed positionsfor dust
+    // allowed positions for dust
     .dust_mask = null,
 
     // maximum number of redstone dusts

@@ -94,15 +94,15 @@ const Options = struct {
     // truth table that the circuit must satisfy
     truth: []const []const struct { []const u1, u1 },
 
-    // allowed positionsfor inputs
+    // allowed positions for inputs
     input_mask: ?[]const u1,
-    // allowed positionsfor outputs
+    // allowed positions for outputs
     output_mask: ?[]const u1,
-    // allowed positionsfor torches
+    // allowed positions for torches
     torch_mask: ?[]const u1,
-    // allowed positionsfor blocks
+    // allowed positions for blocks
     block_mask: ?[]const u1,
-    // allowed positionsfor dust
+    // allowed positions for dust
     dust_mask: ?[]const u1,
 
     // maximum number of redstone dusts
