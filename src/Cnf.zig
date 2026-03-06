@@ -19,9 +19,8 @@ pub fn init(clause_writer: *Io.Writer) @This() {
 
 // Flush out the written CNF clauses
 pub fn flush(self: *const @This()) !void {
-    // Must be done with encoding
+    // Must be done encoding any partial clauses
     assert(self.part_count == 0);
-
     try self.clause_writer.flush();
 }
 
@@ -32,9 +31,9 @@ pub fn deinit(self: *@This()) void {
 
 // Write out the CNF header for this instant
 pub fn header(self: *const @This(), writer: *Io.Writer) !void {
-    // Must be done with encoding
+    // Must be done encoding any partial clauses
     assert(self.part_count == 0);
-
+    // The header contains variable and clause count
     try writer.print("p cnf {} {}\n", .{
         self.variable_count,
         self.clause_count,
@@ -72,6 +71,21 @@ pub fn alloc(self: *@This(), count: u64) Bits {
 
 // ------------------------------------------------------------ CLAUSE ENCODING
 
+// Encode a complete CNF clause with slices
+pub fn clause(
+    self: *@This(),
+    index_list: []const u64,
+    identity_list: []const u1,
+) !void {
+    // Write out every part of the clause in a loop
+    for (index_list, identity_list) |index, identity| {
+        try self.part(index, identity);
+    }
+
+    // Write out the termination for the clause
+    try self.end();
+}
+
 // Write a portion of one CNF clause with an index & identity
 pub fn part(self: *@This(), index: u64, identity: u1) !void {
     // Record any returned error, but don't return it
@@ -84,39 +98,16 @@ pub fn part(self: *@This(), index: u64, identity: u1) !void {
     self.part_count += 1;
 }
 
-// End the current CNF clause (only for use with part)
+// End the current CNF clause (can be replaced with clause())
 pub fn end(self: *@This()) !void {
-    // Ensure we wrote a clause with at least one part.
-    if (self.part_count == 0) return error.EmptyClause;
+    // Verify that we have at least one clause term
+    assert(self.part_count != 0);
     // Write out the end of this clause in CNF
     try self.clause_writer.writeAll("0\n");
     // Update the number of clauses in the total CNF
     self.clause_count += 1;
-    // Update the number of parts in the current clause
+    // We are completed with this multi-part clause
     self.part_count = 0;
-}
-
-// Encode a complete CNF clause with slices
-pub fn clause(
-    self: *@This(),
-    index_list: []const u64,
-    identity_list: []const u1,
-) !void {
-    // Must be done with encoding
-    assert(self.part_count == 0);
-
-    // Write out every part of the clause in a loop
-    for (index_list, identity_list) |index, identity| {
-        switch (identity) {
-            1 => try self.clause_writer.print("{} ", .{index}),
-            0 => try self.clause_writer.print("-{} ", .{index}),
-        }
-    }
-
-    // Write out the end of this clause in CNF
-    try self.clause_writer.writeAll("0\n");
-    // Update the number of clauses in the total CNF
-    self.clause_count += 1;
 }
 
 // --------------------------------------------------------- BITWISE IDENTITIES
@@ -335,8 +326,23 @@ pub fn fullsub(self: *@This(), a: u64, b: u64, i: u64, o: u64, s: u64) !void {
 
 // ---------------------------------------------------------------- CARDINALITY
 
+// Constraint the cardinality of the input to be exactly one. If the "sat"
+// argument is non-null, then the cardinality of input will NOT be constrained
+// to be exactly one - instead, it will be constrained to be one if "sat" is
+// one, and it will be constrained to NOT be one if "sat" is zero - this means
+// that you can constrain sat to be zero or one to check for unsatisfiability
+// in your problems where you are unsure of whether this is unsatisfiable, and
+// you need that information to make informed decisions.
+
 pub fn cardinalityOne(self: *@This(), input: Bits, sat: ?u64) !void {
-    assert(input.len > 0); // You can't have 1/0 bits set
+    if (input.len == 0) {
+        if (sat) |bit| {
+            try self.bitfalse(bit);
+        } else {
+            assert(false); // NO.
+        }
+        return;
+    }
 
     // If we are going to track whether the expression is
     // sat, we will keep track of <= 1 and >= 1 separately.
@@ -416,6 +422,64 @@ pub fn cardinalityOne(self: *@This(), input: Bits, sat: ?u64) !void {
         const le = le_one orelse unreachable;
         const ge = ge_one orelse unreachable;
         try self.bitand(le, ge, bit);
+    }
+}
+
+pub fn cardinalityAtMostOne(self: *@This(), input: Bits, sat: ?u64) !void {
+    if (input.len == 0) {
+        if (sat) |bit|
+            try self.bittrue(bit);
+        return;
+    }
+
+    var bits: Bits = input;
+    while (bits.len > 1) {
+        // At most one bit is set in adjacent pairs
+        for (0..bits.len / 2) |pair| {
+            // ------------------------------------ BACKWARD IMPLICATION OF sat
+            // EITHER: number of set bits is NOT <= 1
+            if (sat) |bit| try self.part(bit, 0);
+            // OR: the left bit of the pair is FALSE
+            try self.part(bits.at(pair * 2), 0);
+            // OR: the right bit of the pair is FALSE
+            try self.part(bits.at(pair * 2 + 1), 0);
+            try self.end();
+        }
+
+        // Allocate bits for the next layer
+        const next_count = (bits.len + 1) / 2;
+        var next: Bits = self.alloc(next_count);
+
+        // Carry ORs of working bits to the next layer
+        for (0..bits.len / 2) |pair| {
+            const lhs = bits.at(pair * 2);
+            const rhs = bits.at(pair * 2 + 1);
+            try self.bitor(lhs, rhs, next.at(pair));
+        }
+
+        // Carry any extra bit to the next layer
+        if (bits.len & 1 == 1) {
+            const lhs = bits.at(bits.len - 1);
+            const rhs = next.at(next.len - 1);
+            try self.biteql(lhs, rhs);
+        }
+
+        // Swap the layers
+        bits = next;
+    }
+
+    if (sat) |bit| {
+        for (0..input.len) |skip| {
+            // ------------------------------------- FORWARD IMPLICATION OF sat
+            // EITHER: number of set bits is <= 1
+            try self.part(bit, 1);
+            // OR: at least one bit (except skip) is true
+            for (0..input.len) |off| {
+                if (off == skip) continue;
+                try self.part(input.at(off), 1);
+            }
+            try self.end();
+        }
     }
 }
 
