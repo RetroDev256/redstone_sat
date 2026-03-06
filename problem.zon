@@ -4,9 +4,9 @@
     // how many outputs there are to the circuit
     .output_count = 2,
     // how many blocks [west to east] the circuit is
-    .width = 5,
+    .width = 7,
     // how many blocks [north to south] the circuit is
-    .length = 5,
+    .length = 7,
     // truth table that the circuit must satisfy
     .truth = .{
         .{ // SUM
@@ -23,6 +23,33 @@
         },
     },
 
+    // allowed positionsfor inputs
+    .input_mask = .{
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0,
+    },
+    // allowed positionsfor outputs
+    .output_mask = .{
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 1,
+    },
+    // allowed positionsfor torches
+    .torch_mask = null,
+    // allowed positionsfor blocks
+    .block_mask = null,
+    // allowed positionsfor dust
+    .dust_mask = null,
+
     // maximum number of redstone dusts
     .max_dust = null,
     // maximum number of redstone torches
@@ -35,25 +62,24 @@
     // allow placement of south facing torches
     .allow_s_torch = true,
     // allow placement of west facing torches
-    .allow_w_torch = true,
-
-    // whether to allow a weakly powered block as an output
-    .allow_block_output = true,
+    .allow_w_torch = false, // !!!!!!!!!!!
     // whether to allow a torch as an output
     .allow_torch_output = true,
     // whether to allow a dust as an output
     .allow_dust_output = true,
+    // whether to allow a block as an input
+    .allow_block_input = true,
+    // Whether to allow a dust as an input
+    .allow_dust_input = true,
+
+    // enforce transitivity for inputs and outputs
+    .io_transitivity = true,
+    // prevent backfeeding of signal to the inputs
+    .input_isolation = true,
     // whether to redirect input dust on the edges
     .redirect_input_edge_dust = true,
     // whether to redirect output dust on the edges
     .redirect_output_edge_dust = true,
-
-    // whether to prevent backfeeding of signal to the inputs
-    .isolation = true,
-    // whether to allow a weakly powered block as an input
-    .allow_weak_powered_block_input = true,
-    // whether to allow dust (max signal strength) as an input
-    .allow_max_signal_dust_input = true,
 
     // enforce acyclic graph with a unary counter
     .transition_bits = 15,
