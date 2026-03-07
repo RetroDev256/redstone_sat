@@ -562,7 +562,9 @@ fn inputOutputSpacing(
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
-        for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
+        // To prevent duplications of clauses, only deal with two
+        // cardinal directions, encoding the bijective when necessary.
+        for (0..2) |dir| if (cardinal(opt, pos, dir)) |card| {
             // prevent inputs from touching cardinal inputs
             if (opt.input_spacing) {
                 try cnf.part(vars.input.at(pos), 0);
@@ -579,8 +581,13 @@ fn inputOutputSpacing(
 
             // prevent inputs from touching cardinal outputs
             if (opt.both_io_spacing) {
+                // INPUT -> OUTPUT
                 try cnf.part(vars.input.at(pos), 0);
                 try cnf.part(vars.output.at(card), 0);
+                try cnf.end();
+                // OUTPUT -> INPUT
+                try cnf.part(vars.output.at(pos), 0);
+                try cnf.part(vars.input.at(card), 0);
                 try cnf.end();
             }
         };
@@ -948,27 +955,25 @@ fn ioTransitivity(
     vars: *const Variables,
     opt: *const Options,
 ) !void {
-    // greater inputs come before lesser inputs
-    if (opt.input_transitivity) {
-        for (0..opt.area()) |p_hi| for (0..p_hi) |p_lt| {
+    for (0..opt.area()) |p_hi| for (0..p_hi) |p_lo| {
+        // greater inputs come before lesser inputs
+        if (opt.input_transitivity) {
             for (0..opt.input_count) |i_gt| for (0..i_gt) |i_lt| {
                 const a = vars.inputMapAt(opt, i_gt, p_hi);
-                const b = vars.inputMapAt(opt, i_lt, p_lt);
+                const b = vars.inputMapAt(opt, i_lt, p_lo);
                 try cnf.clause(&.{ a, b }, &.{ 0, 0 });
             };
-        };
-    }
+        }
 
-    // greater outputs come before lesser outputs
-    if (opt.input_transitivity) {
-        for (0..opt.area()) |p_hi| for (0..p_hi) |p_lt| {
+        // greater outputs come before lesser outputs
+        if (opt.output_transitivity) {
             for (0..opt.output_count) |o_gt| for (0..o_gt) |o_lt| {
-                const a = vars.inputMapAt(opt, o_gt, p_hi);
-                const b = vars.inputMapAt(opt, o_lt, p_lt);
+                const a = vars.outputMapAt(opt, o_gt, p_hi);
+                const b = vars.outputMapAt(opt, o_lt, p_lo);
                 try cnf.clause(&.{ a, b }, &.{ 0, 0 });
             };
-        };
-    }
+        }
+    };
 }
 
 // constrain cardinality of input_map
