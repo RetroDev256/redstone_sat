@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const Io = std.Io;
 
+const Variables = @import("Variables.zig");
+const Options = @import("Options.zig");
 const Cnf = @import("Cnf.zig");
 const Bits = Cnf.Bits;
 
@@ -75,266 +77,6 @@ pub fn main(init: std.process.Init.Minimal) void {
     }
 }
 
-// TODO:
-// - Add something to config that allows people to block out positions
-// - Add something to config that allows constraining of input/outputs
-// - Add something to select either/or torches/dust for output types
-// - Add something to select either/or dust/blocks for input types
-// - Add option to allow inputs or outputs to always be negated
-
-const Options = struct {
-    // how many inputs there are to the circuit
-    input_count: u64,
-    // how many outputs there are to the circuit
-    output_count: u64,
-    // how many blocks [west to east] the circuit is
-    width: u64,
-    // how many blocks [north to south] the circuit is
-    length: u64,
-    // truth table that the circuit must satisfy
-    truth: []const []const struct { []const u1, u1 },
-
-    // allowed positions for inputs
-    input_mask: ?[]const u1,
-    // allowed positions for outputs
-    output_mask: ?[]const u1,
-    // allowed positions for torches
-    torch_mask: ?[]const u1,
-    // allowed positions for blocks
-    block_mask: ?[]const u1,
-    // allowed positions for dust
-    dust_mask: ?[]const u1,
-
-    // maximum number of redstone dusts
-    max_dust: ?u64,
-    // maximum number of redstone torches
-    max_torch: ?u64,
-
-    // allow placement of north facing torches
-    allow_n_torch: bool,
-    // allow placement of east facing torches
-    allow_e_torch: bool,
-    // allow placement of south facing torches
-    allow_s_torch: bool,
-    // allow placement of west facing torches
-    allow_w_torch: bool,
-    // whether to allow a torch as an output
-    allow_torch_output: bool,
-    // whether to allow a dust as an output
-    allow_dust_output: bool,
-    // whether to allow a block as an input
-    allow_block_input: bool,
-    // Whether to allow a dust as an input
-    allow_dust_input: bool,
-
-    // enforce transitivity for inputs and outputs
-    io_transitivity: bool,
-    // prevent backfeeding of signal to the inputs
-    input_isolation: bool,
-    // whether to redirect input dust on the edges
-    redirect_input_edge_dust: bool,
-    // whether to redirect output dust on the edges
-    redirect_output_edge_dust: bool,
-
-    // enforce acyclic graph with a unary counter
-    transition_bits: u64,
-    // redstone dust max signal strength
-    max_signal_strength: u64,
-
-    fn init(gpa: Allocator, source: [:0]const u8) !@This() {
-        @setEvalBranchQuota(10_000); // for fromSliceAlloc
-        const fromSliceAlloc = std.zon.parse.fromSliceAlloc;
-        const self = try fromSliceAlloc(@This(), gpa, source, null, .{});
-
-        if (self.output_count == 0)
-            return error.ZeroOutputCount;
-        if (self.input_count == 0)
-            return error.ZeroInputCount;
-        if (self.truth.len != self.output_count)
-            return error.MismatchingOutputCount;
-
-        for (self.truth) |out| {
-            for (out) |row| {
-                if (row[0].len != self.input_count) {
-                    return error.MismatchingInputCount;
-                }
-            }
-        }
-
-        return self;
-    }
-
-    fn deinit(self: *const @This(), gpa: Allocator) void {
-        std.zon.parse.free(gpa, self.*);
-    }
-
-    fn area(self: *const @This()) u64 {
-        return self.width * self.length;
-    }
-
-    fn states(self: *const @This()) u64 {
-        return @as(u64, 1) << @intCast(self.input_count);
-    }
-};
-
-const Variables = struct {
-    // [position]
-    dust: Bits, // position is dust
-    torch: Bits, // position is torch
-    block: Bits, // position is block
-    input: Bits, // position is input
-    output: Bits, // position is output
-
-    // [cardinal_direction] * [position]
-    facing_redirect: [4]Bits, // redirection source to the cardinal directions
-    facing_connect: [4]Bits, // dust connected to the cardinal directions
-    facing_torch: [4]Bits, // torch facing in a particular direction
-
-    // [input_index] - [position]
-    input_map: Bits, // selector for specific inputs
-
-    // [output_index] - [position]
-    output_map: Bits, // selector for specific outputs
-
-    // [position] - [segment_bit_index]
-    segment: Bits, // transitively enforce acyclicity
-
-    // [state] - [position]
-    torch_on: Bits, // torch is powered
-    block_on: Bits, // block is powered
-    override_on: Bits, // *override* something to be on
-    constrain_on: Bits, // *constrain* something to be on
-    constrain_off: Bits, // *constrain* something to be off
-
-    // [cardinal_direction] - [state] - [position]
-    connected_on: [4]Bits, // dust is powered and connected in some direction
-
-    // [state] - [position] - [signal_strength_bit_index]
-    strength: Bits,
-
-    fn init(opt: *const Options, cnf: *Cnf) @This() {
-        const area = opt.area();
-        const states = opt.states();
-        const seg_bits = opt.transition_bits;
-        const power_bits = opt.max_signal_strength;
-
-        return .{
-            .dust = cnf.alloc(area),
-            .torch = cnf.alloc(area),
-            .block = cnf.alloc(area),
-            .input = cnf.alloc(area),
-            .output = cnf.alloc(area),
-
-            .facing_redirect = .{
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-            },
-            .facing_connect = .{
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-            },
-            .facing_torch = .{
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-                cnf.alloc(area),
-            },
-
-            .input_map = cnf.alloc(opt.input_count * area),
-
-            .output_map = cnf.alloc(opt.output_count * area),
-
-            .segment = cnf.alloc(area * seg_bits),
-
-            .torch_on = cnf.alloc(states * area),
-            .block_on = cnf.alloc(states * area),
-            .override_on = cnf.alloc(states * area),
-            .constrain_on = cnf.alloc(states * area),
-            .constrain_off = cnf.alloc(states * area),
-
-            .connected_on = .{
-                cnf.alloc(states * area),
-                cnf.alloc(states * area),
-                cnf.alloc(states * area),
-                cnf.alloc(states * area),
-            },
-
-            .strength = cnf.alloc(states * area * power_bits),
-        };
-    }
-
-    fn facingRedirectAt(self: *const @This(), dir: u64, pos: u64) u64 {
-        assert(dir < 4);
-        return self.facing_redirect[dir].at(pos);
-    }
-
-    fn facingConnectAt(self: *const @This(), dir: u64, pos: u64) u64 {
-        assert(dir < 4);
-        return self.facing_connect[dir].at(pos);
-    }
-
-    fn facingTorchAt(self: *const @This(), dir: u64, pos: u64) u64 {
-        assert(dir < 4);
-        return self.facing_torch[dir].at(pos);
-    }
-
-    fn inputMapAt(self: *const @This(), opt: *const Options, inp: u64, pos: u64) u64 {
-        assert(inp < opt.input_count);
-        return self.input_map.at(inp * opt.area() + pos);
-    }
-
-    fn outputMapAt(self: *const @This(), opt: *const Options, out: u64, pos: u64) u64 {
-        assert(out < opt.output_count);
-        return self.output_map.at(out * opt.area() + pos);
-    }
-
-    fn segmentAt(self: *const @This(), opt: *const Options, pos: u64) Bits {
-        const index = self.segment.at(pos * opt.transition_bits);
-        return .init(index, opt.transition_bits);
-    }
-
-    fn torchOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
-        assert(state < opt.states());
-        return self.torch_on.at(state * opt.area() + pos);
-    }
-
-    fn blockOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
-        assert(state < opt.states());
-        return self.block_on.at(state * opt.area() + pos);
-    }
-
-    fn overrideOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
-        assert(state < opt.states());
-        return self.override_on.at(state * opt.area() + pos);
-    }
-
-    fn constrainOnAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
-        assert(state < opt.states());
-        return self.constrain_on.at(state * opt.area() + pos);
-    }
-
-    fn constrainOffAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) u64 {
-        assert(state < opt.states());
-        return self.constrain_off.at(state * opt.area() + pos);
-    }
-
-    fn connectedOnAt(self: *const @This(), opt: *const Options, dir: u64, state: u64, pos: u64) u64 {
-        assert(dir < 4);
-        assert(state < opt.states());
-        return self.connected_on[dir].at(state * opt.area() + pos);
-    }
-
-    fn strengthAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) Bits {
-        assert(state < opt.states());
-        const offset = (state * opt.area() + pos) * opt.max_signal_strength;
-        return .init(self.strength.at(offset), opt.max_signal_strength);
-    }
-};
-
 fn encodeMain(
     io: Io,
     _: Allocator,
@@ -362,12 +104,14 @@ fn encodeMain(
 
     const function_name_list: []const []const u8 = &.{
         "blockMaps",
+        "blockForced",
         "inputOverlap",
         "blockPowered",
         "torchPowered",
         "outputOverlap",
         "dustConnection",
         "inputBlockType",
+        "ioTransitivity",
         "inputOverrideOn",
         "dustCardinality",
         "outputBlockType",
@@ -378,6 +122,7 @@ fn encodeMain(
         "outputCardinality",
         "outputConstrainOn",
         "torchBlockSupports",
+        "inputOutputSpacing",
         "segmentTransitivity",
         "torchDustConnection",
         "inputMapCardinality",
@@ -679,21 +424,52 @@ fn blockMaps(
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
+
         // Inputs are not to be placed where they aren't allowed
-        if (opt.input_mask) |mask| if (mask[pos] != 1)
+        if (opt.input_mask) |mask| if (mask[z][x] != 1)
             try cnf.bitfalse(vars.input.at(pos));
         // Outputs are not to be placed where they aren't allowed
-        if (opt.output_mask) |mask| if (mask[pos] != 1)
+        if (opt.output_mask) |mask| if (mask[z][x] != 1)
             try cnf.bitfalse(vars.output.at(pos));
         // Torches are not to be placed where they aren't allowed
-        if (opt.torch_mask) |mask| if (mask[pos] != 1)
+        if (opt.torch_mask) |mask| if (mask[z][x] != 1)
             try cnf.bitfalse(vars.torch.at(pos));
         // Blocks are not to be placed where they aren't allowed
-        if (opt.block_mask) |mask| if (mask[pos] != 1)
+        if (opt.block_mask) |mask| if (mask[z][x] != 1)
             try cnf.bitfalse(vars.block.at(pos));
         // Dusts are not to be placed where they aren't allowed
-        if (opt.dust_mask) |mask| if (mask[pos] != 1)
+        if (opt.dust_mask) |mask| if (mask[z][x] != 1)
             try cnf.bitfalse(vars.dust.at(pos));
+    }
+}
+
+// Enforced positions for inputs, outputs, torches, blocks, and dust
+fn blockForced(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        const x = pos % opt.width;
+        const z = pos / opt.width;
+
+        // Inputs are to be placed where they are forced
+        if (opt.input_forced) |forced| if (forced[z][x] == 1)
+            try cnf.bittrue(vars.input.at(pos));
+        // Outputs are to be placed where they are forced
+        if (opt.output_forced) |forced| if (forced[z][x] == 1)
+            try cnf.bittrue(vars.output.at(pos));
+        // Torches are to be placed where they are forced
+        if (opt.torch_forced) |forced| if (forced[z][x] == 1)
+            try cnf.bittrue(vars.torch.at(pos));
+        // Blocks are to be placed where they are forced
+        if (opt.block_forced) |forced| if (forced[z][x] == 1)
+            try cnf.bittrue(vars.block.at(pos));
+        // Dusts are to be placed where they are forced
+        if (opt.dust_forced) |forced| if (forced[z][x] == 1)
+            try cnf.bittrue(vars.dust.at(pos));
     }
 }
 
@@ -775,6 +551,39 @@ fn torchBlockSupports(
                 try cnf.bitfalse(torch);
             }
         }
+    }
+}
+
+// Prevent cardinal inputs and outputs from touching each other, depending
+// on the configuration of input-input, output-output, or input-output
+fn inputOutputSpacing(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    for (0..opt.area()) |pos| {
+        for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
+            // prevent inputs from touching cardinal inputs
+            if (opt.input_spacing) {
+                try cnf.part(vars.input.at(pos), 0);
+                try cnf.part(vars.input.at(card), 0);
+                try cnf.end();
+            }
+
+            // prevent outputs from touching cardinal outputs
+            if (opt.output_spacing) {
+                try cnf.part(vars.output.at(pos), 0);
+                try cnf.part(vars.output.at(card), 0);
+                try cnf.end();
+            }
+
+            // prevent inputs from touching cardinal outputs
+            if (opt.both_io_spacing) {
+                try cnf.part(vars.input.at(pos), 0);
+                try cnf.part(vars.output.at(card), 0);
+                try cnf.end();
+            }
+        };
     }
 }
 
@@ -1130,6 +939,35 @@ fn outputBlockType(
             try cnf.part(vars.torch.at(pos), 1);
 
         try cnf.end();
+    }
+}
+
+// constrain transitivity of inputs and outputs
+fn ioTransitivity(
+    cnf: *Cnf,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // greater inputs come before lesser inputs
+    if (opt.input_transitivity) {
+        for (0..opt.area()) |p_hi| for (0..p_hi) |p_lt| {
+            for (0..opt.input_count) |i_gt| for (0..i_gt) |i_lt| {
+                const a = vars.inputMapAt(opt, i_gt, p_hi);
+                const b = vars.inputMapAt(opt, i_lt, p_lt);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+            };
+        };
+    }
+
+    // greater outputs come before lesser outputs
+    if (opt.input_transitivity) {
+        for (0..opt.area()) |p_hi| for (0..p_hi) |p_lt| {
+            for (0..opt.output_count) |o_gt| for (0..o_gt) |o_lt| {
+                const a = vars.inputMapAt(opt, o_gt, p_hi);
+                const b = vars.inputMapAt(opt, o_lt, p_lt);
+                try cnf.clause(&.{ a, b }, &.{ 0, 0 });
+            };
+        };
     }
 }
 

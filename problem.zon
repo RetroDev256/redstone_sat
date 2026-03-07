@@ -1,3 +1,7 @@
+// upper bound: 11x10
+
+// lower bound: 9x5
+
 .{
     // how many inputs there are to the circuit
     .input_count = 2,
@@ -6,7 +10,7 @@
     // how many blocks [west to east] the circuit is
     .width = 7,
     // how many blocks [north to south] the circuit is
-    .length = 7,
+    .length = 6,
     // truth table that the circuit must satisfy
     .truth = .{
         .{ // SUM
@@ -25,30 +29,67 @@
 
     // allowed positions for inputs
     .input_mask = .{
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
-        1, 0, 0, 0, 0, 0, 0,
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
     },
     // allowed positions for outputs
     .output_mask = .{
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0, 1,
+        .{ 0, 0, 0, 1, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
     },
     // allowed positions for torches
     .torch_mask = null,
     // allowed positions for blocks
     .block_mask = null,
     // allowed positions for dust
-    .dust_mask = null,
+    .dust_mask = .{
+        .{ 0, 1, 1, 1, 1, 1, 1 },
+        .{ 1, 0, 1, 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1, 1, 1, 1 },
+    },
+
+    // enforced positions for inputs
+    .input_forced = .{
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+    },
+    // enforced positions for outputs
+    .output_forced = .{
+        .{ 0, 0, 0, 1, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+    },
+    // enforced positions for torches
+    .torch_forced = null,
+    // enforced positions for blocks
+    .block_forced = .{
+        .{ 0, 1, 1, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 1, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+        .{ 0, 0, 0, 0, 0, 0, 0 },
+    },
+    // enforced positions for dust
+    .dust_forced = null,
 
     // maximum number of redstone dusts
     .max_dust = null,
@@ -62,7 +103,7 @@
     // allow placement of south facing torches
     .allow_s_torch = true,
     // allow placement of west facing torches
-    .allow_w_torch = false, // !!!!!!!!!!!
+    .allow_w_torch = true,
     // whether to allow a torch as an output
     .allow_torch_output = true,
     // whether to allow a dust as an output
@@ -72,10 +113,18 @@
     // Whether to allow a dust as an input
     .allow_dust_input = true,
 
-    // enforce transitivity for inputs and outputs
-    .io_transitivity = true,
+    // enforce transitivity for inputs
+    .input_transitivity = true,
+    // enforce transitivity for outputs
+    .output_transitivity = true,
     // prevent backfeeding of signal to the inputs
     .input_isolation = true,
+    // prevent inputs from touching cardinal inputs
+    .input_spacing = true,
+    // prevent outputs from touching cardinal outputs
+    .output_spacing = true,
+    // prevent inputs from touching cardinal outputs
+    .both_io_spacing = true,
     // whether to redirect input dust on the edges
     .redirect_input_edge_dust = true,
     // whether to redirect output dust on the edges
