@@ -73,10 +73,8 @@ redirect_input_edge_dust: bool,
 // whether to redirect output dust on the edges
 redirect_output_edge_dust: bool,
 
-// enforce acyclic graph with a unary counter
+// enforce acyclic graph with some bits per cell
 transition_bits: u64,
-// redstone dust max signal strength
-max_signal_strength: u64,
 
 pub fn init(gpa: Allocator, source: [:0]const u8) !@This() {
     @setEvalBranchQuota(10_000); // for fromSliceAlloc

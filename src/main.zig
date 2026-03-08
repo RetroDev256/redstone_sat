@@ -218,6 +218,8 @@ fn decodeMain(
     defer gpa.free(is_s_connect);
     const is_w_connect: []u1 = try gpa.alloc(u1, area);
     defer gpa.free(is_w_connect);
+    const is_torch: []u1 = try gpa.alloc(u1, area);
+    defer gpa.free(is_torch);
     const is_n_torch: []u1 = try gpa.alloc(u1, area);
     defer gpa.free(is_n_torch);
     const is_e_torch: []u1 = try gpa.alloc(u1, area);
@@ -232,8 +234,10 @@ fn decodeMain(
     const is_output: []u1 = try gpa.alloc(u1, area);
     defer gpa.free(is_output);
 
-    const is_dust_on: []u1 = try gpa.alloc(u1, area);
-    defer gpa.free(is_dust_on);
+    const dust_power: []u4 = try gpa.alloc(u4, area);
+    defer gpa.free(dust_power);
+    @memset(dust_power, 0);
+
     const is_torch_on: []u1 = try gpa.alloc(u1, area);
     defer gpa.free(is_torch_on);
 
@@ -259,6 +263,7 @@ fn decodeMain(
                 .{ is_e_connect, vars.facing_connect[1] },
                 .{ is_s_connect, vars.facing_connect[2] },
                 .{ is_w_connect, vars.facing_connect[3] },
+                .{ is_torch, vars.torch },
                 .{ is_n_torch, vars.facing_torch[0] },
                 .{ is_e_torch, vars.facing_torch[1] },
                 .{ is_s_torch, vars.facing_torch[2] },
@@ -275,9 +280,12 @@ fn decodeMain(
             }
 
             for (0..area) |pos| {
-                if (decoded == vars.strengthAt(opt, 0, pos).at(0)) {
-                    is_dust_on[pos] = value;
-                    continue :outer;
+                for (0..15) |power| {
+                    const strength = vars.strengthAt(opt, 0, pos);
+                    if (decoded == strength.at(power)) {
+                        const new_power = @as(u4, @intCast(power + 1)) * value;
+                        dust_power[pos] = @max(dust_power[pos], new_power);
+                    }
                 }
             }
 
@@ -290,114 +298,135 @@ fn decodeMain(
         }
     }
 
+    // For preventing unnecessary rendering
+    var old_color: []const u8 = &.{};
+
     for (0..opt.length) |z| {
         for (0..3) |sub_row| {
             for (0..opt.width) |x| {
                 const pos = x + z * opt.width;
-                var display: [3][]const u8 = unknown_display;
 
-                if (is_block[pos] == 1) {
-                    display = block_display;
-                    try stdout.writeAll(Color.code(.block));
-                }
+                const new_color = blockColor(
+                    is_input[pos] == 1,
+                    is_output[pos] == 1,
+                    is_block[pos] == 1,
+                    is_torch[pos] == 1,
+                    is_torch_on[pos] == 1,
+                    is_dust[pos] == 1,
+                    dust_power[pos] != 0,
+                );
 
-                inline for (&.{
-                    .{ is_n_torch, n_torch_display },
-                    .{ is_e_torch, e_torch_display },
-                    .{ is_s_torch, s_torch_display },
-                    .{ is_w_torch, w_torch_display },
-                }) |list| if (list[0][pos] == 1) {
-                    display = list[1];
-
-                    if (is_torch_on[pos] == 1) {
-                        try stdout.writeAll(Color.code(.powered_torch));
-                    } else {
-                        try stdout.writeAll(Color.code(.unpowered_torch));
-                    }
-
-                    break;
-                };
-
-                if (is_dust[pos] == 1) {
-                    display = dustDisplay(
-                        is_n_connect[pos],
-                        is_e_connect[pos],
-                        is_s_connect[pos],
-                        is_w_connect[pos],
-                    );
-
-                    if (is_dust_on[pos] == 1) {
-                        try stdout.writeAll(Color.code(.powered_dust));
-                    } else {
-                        try stdout.writeAll(Color.code(.unpowered_dust));
+                if (new_color) |color| {
+                    if (color.ptr != old_color.ptr) {
+                        try stdout.writeAll(color);
+                        old_color = color;
                     }
                 }
 
-                if (is_input[pos] == 1)
-                    try stdout.writeAll(Color.code(.input));
-                if (is_output[pos] == 1)
-                    try stdout.writeAll(Color.code(.output));
+                for (0..3) |sub_col| {
+                    const row: u2 = @intCast(sub_row);
+                    const col: u2 = @intCast(sub_col);
 
-                try stdout.writeAll(display[sub_row]);
-                try stdout.writeAll(Color.reset);
+                    if (is_dust[pos] == 1) {
+                        const n = is_n_connect[pos] == 1;
+                        const e = is_e_connect[pos] == 1;
+                        const s = is_s_connect[pos] == 1;
+                        const w = is_w_connect[pos] == 1;
+                        const p = dust_power[pos];
+                        const display = dustDisplay(row, col, n, e, s, w, p);
+                        try stdout.writeAll(display);
+                    } else if (is_n_torch[pos] == 1) {
+                        try stdout.writeAll(torchDisplay(row, col, 0));
+                    } else if (is_e_torch[pos] == 1) {
+                        try stdout.writeAll(torchDisplay(row, col, 1));
+                    } else if (is_s_torch[pos] == 1) {
+                        try stdout.writeAll(torchDisplay(row, col, 2));
+                    } else if (is_w_torch[pos] == 1) {
+                        try stdout.writeAll(torchDisplay(row, col, 3));
+                    } else if (is_block[pos] == 1) {
+                        try stdout.writeAll(blockDisplay(row, col));
+                    } else {
+                        try stdout.writeAll(unknownDisplay(row, col));
+                    }
+                }
             }
             try stdout.writeByte('\n');
         }
     }
 
+    try stdout.writeAll("\x1B[0m"); // color reset
     try stdout.flush();
 }
 
-const Color = enum {
-    unpowered_dust, // dark red
-    powered_dust, // light red
-    unpowered_torch, // light brown
-    powered_torch, // bright yellow
-    output, // neon green
-    input, // light blue
-    block, // gray
-
-    const reset: []const u8 = "\x1B[0m";
-    fn code(self: @This()) []const u8 {
-        return switch (self) {
-            .unpowered_dust => "\x1B[38;5;52m",
-            .powered_dust => "\x1B[38;5;196m",
-            .unpowered_torch => "\x1B[38;5;94m",
-            .powered_torch => "\x1B[38;5;226m",
-            .output => "\x1B[38;5;46m",
-            .input => "\x1B[38;5;51m",
-            .block => "\x1B[38;5;240m",
-        };
-    }
-};
-
-fn dustDisplay(n: u4, e: u4, s: u4, w: u4) [3][]const u8 {
-    return switch ((n << 3) | (e << 2) | (s << 1) | w) {
-        0b0000 => .{ "      ", "  𜶉𜶉  ", "      " },
-        0b0001 => .{ "      ", "𜶉𜶉𜶉𜶉  ", "      " },
-        0b0010 => .{ "      ", "  𜶉𜶉  ", "  𜶉𜶉  " },
-        0b0011 => .{ "      ", "𜶉𜶉𜶉𜶉  ", "  𜶉𜶉  " },
-        0b0100 => .{ "      ", "  𜶉𜶉𜶉𜶉", "      " },
-        0b0101 => .{ "      ", "𜶉𜶉𜶉𜶉𜶉𜶉", "      " },
-        0b0110 => .{ "      ", "  𜶉𜶉𜶉𜶉", "  𜶉𜶉  " },
-        0b0111 => .{ "      ", "𜶉𜶉𜶉𜶉𜶉𜶉", "  𜶉𜶉  " },
-        0b1000 => .{ "  𜶉𜶉  ", "  𜶉𜶉  ", "      " },
-        0b1001 => .{ "  𜶉𜶉  ", "𜶉𜶉𜶉𜶉  ", "      " },
-        0b1010 => .{ "  𜶉𜶉  ", "  𜶉𜶉  ", "  𜶉𜶉  " },
-        0b1011 => .{ "  𜶉𜶉  ", "𜶉𜶉𜶉𜶉  ", "  𜶉𜶉  " },
-        0b1100 => .{ "  𜶉𜶉  ", "  𜶉𜶉𜶉𜶉", "      " },
-        0b1101 => .{ "  𜶉𜶉  ", "𜶉𜶉𜶉𜶉𜶉𜶉", "      " },
-        0b1110 => .{ "  𜶉𜶉  ", "  𜶉𜶉𜶉𜶉", "  𜶉𜶉  " },
-        0b1111 => .{ "  𜶉𜶉  ", "𜶉𜶉𜶉𜶉𜶉𜶉", "  𜶉𜶉  " },
-    };
+fn blockColor(
+    input: bool,
+    output: bool,
+    block: bool,
+    torch: bool,
+    torch_on: bool,
+    dust: bool,
+    dust_on: bool,
+) ?[]const u8 {
+    if (input) return "\x1B[38;5;51m"; // light blue
+    if (output) return "\x1B[38;5;46m"; // neon green
+    if (block) return "\x1B[38;5;240m"; // gray
+    if (torch_on) return "\x1B[38;5;226m"; // yellow
+    if (torch) return "\x1B[38;5;94m"; // brown
+    if (dust_on) return "\x1B[38;5;196m"; // light red
+    if (dust) return "\x1B[38;5;52m"; // dark red
+    return null;
 }
 
-const block_display = .{ "██████", "██🬤🬗██", "██████" };
-const n_torch_display = .{ "      ", "  𜷂𜷖  ", "  ▐▌  " };
-const e_torch_display = .{ "      ", "𜴳𜴳𜷂𜷖  ", "      " };
-const s_torch_display = .{ "  ▐▌  ", "  𜷂𜷖  ", "      " };
-const w_torch_display = .{ "      ", "  𜷂𜷖𜴳𜴳", "      " };
-const unknown_display = .{ "? ? ? ", " ? ? ?", "? ? ? " };
+fn dustDisplay(
+    row: u2,
+    col: u2,
+    north: bool,
+    east: bool,
+    south: bool,
+    west: bool,
+    power: u4,
+) []const u8 {
+    if (row == 0 and col == 1 and north) return "𜶉𜶉";
+    if (row == 1 and col == 2 and east) return "𜶉𜶉";
+    if (row == 2 and col == 1 and south) return "𜶉𜶉";
+    if (row == 1 and col == 0 and west) return "𜶉𜶉";
+
+    if (row == 1 and col == 1) {
+        return ([16][]const u8{
+            "00", "01", "02", "03",
+            "04", "05", "06", "07",
+            "08", "09", "10", "11",
+            "12", "13", "14", "15",
+        })[power];
+    }
+
+    return "  ";
+}
+
+fn torchDisplay(row: u2, col: u2, dir: u2) []const u8 {
+    if (row == 1 and col == 1) return "𜷂𜷖";
+    if (row == 2 and col == 1 and dir == 0) return "▐▌";
+    if (row == 1 and col == 0 and dir == 1) return "𜴳𜴳";
+    if (row == 0 and col == 1 and dir == 2) return "▐▌";
+    if (row == 1 and col == 2 and dir == 3) return "𜴳𜴳";
+    return "  ";
+}
+
+fn blockDisplay(row: u2, col: u2) []const u8 {
+    if (row == 1 and col == 1) {
+        return "🬤🬗";
+    } else {
+        return "██";
+    }
+}
+
+fn unknownDisplay(row: u2, col: u2) []const u8 {
+    if (row == 1 and col == 1) {
+        return "??";
+    } else {
+        return "  ";
+    }
+}
 
 /// Return a flat index representing an offset position, given an original
 /// position, cardinal direction, and options - for the width of the circuit
@@ -1351,7 +1380,7 @@ fn dustPowerStrengthPropagation(
             // The signal strength of the current block (at pos, for state)
             const strength = vars.strengthAt(opt, state, pos);
             // Whether the current block (at pos, for state) is fully powered
-            const maxxed = strength.at(opt.max_signal_strength - 1);
+            const maxxed = strength.at(14);
             // Whether the current block (at pos, for state) is powered
             const powered = strength.at(0);
 
@@ -1374,7 +1403,7 @@ fn dustPowerStrengthPropagation(
             // Dust strength is at least max(neighbors_strength) -| 1
             for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                 const source = vars.strengthAt(opt, state, card);
-                for (0..opt.max_signal_strength - 1) |bit| {
+                for (0..14) |bit| {
                     const src = source.at(bit + 1);
                     const dst = strength.at(bit);
                     try cnf.clause(&.{ dust, src, dst }, &.{ 0, 0, 1 });
@@ -1390,7 +1419,7 @@ fn dustPowerStrengthPropagation(
             const constrain_off = vars.constrainOffAt(opt, state, pos);
             try cnf.clause(&.{ constrain_off, powered }, &.{ 0, 0 });
 
-            for (0..opt.max_signal_strength) |bit| {
+            for (0..15) |bit| {
                 // EITHER: We are not at maximum signal strength
                 try cnf.part(strength.at(bit), 0);
 
@@ -1405,7 +1434,7 @@ fn dustPowerStrengthPropagation(
                 // OR: a cardinal strength bit at "bit + 1" is TRUE
                 for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                     const source = vars.strengthAt(opt, state, card);
-                    if (bit < opt.max_signal_strength - 1)
+                    if (bit < 14)
                         try cnf.part(source.at(bit + 1), 1);
                 };
 

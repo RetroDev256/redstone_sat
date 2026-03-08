@@ -43,7 +43,6 @@ pub fn init(opt: *const Options, cnf: *Cnf) @This() {
     const area = opt.area();
     const states = opt.states();
     const seg_bits = opt.transition_bits;
-    const power_bits = opt.max_signal_strength;
 
     return .{
         .dust = cnf.alloc(area),
@@ -90,7 +89,7 @@ pub fn init(opt: *const Options, cnf: *Cnf) @This() {
             cnf.alloc(states * area),
         },
 
-        .strength = cnf.alloc(states * area * power_bits),
+        .strength = cnf.alloc(states * area * 15),
     };
 }
 
@@ -157,6 +156,6 @@ pub fn connectedOnAt(self: *const @This(), opt: *const Options, dir: u64, state:
 
 pub fn strengthAt(self: *const @This(), opt: *const Options, state: u64, pos: u64) Bits {
     assert(state < opt.states());
-    const offset = (state * opt.area() + pos) * opt.max_signal_strength;
-    return .init(self.strength.at(offset), opt.max_signal_strength);
+    const offset = (state * opt.area() + pos) * 15;
+    return .init(self.strength.at(offset), 15);
 }
