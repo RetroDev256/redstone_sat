@@ -40,3 +40,10 @@ The following items I plan to fix, improve, and/or add to this project in the fu
 * [ ] Integrate Kissat libraries directly into the program to simplify flow.
 * [ ] Add optional configurable tree of operations to further constrain circuit.
 * [ ] Simplify clause generation (totalizer network & segment ID constraints)
+
+## Demonstration Image
+
+As an example of what this program is capable of, here are two separate redstone circuits that will logically swap two wires without overlapping these two wires. Both displayed circuits were generated with this project:
+
+<img width="2560" height="1600" alt="image" src="https://github.com/user-attachments/assets/eeb2af5c-a909-4478-8885-265b4aae3951" />
+
