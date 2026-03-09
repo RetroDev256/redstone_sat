@@ -47,3 +47,7 @@ As an example of what this program is capable of, here are two separate redstone
 
 <img width="2560" height="1600" alt="image" src="https://github.com/user-attachments/assets/eeb2af5c-a909-4478-8885-265b4aae3951" />
 
+Here are two more demonstration circuits - namely, full adders:
+
+<img width="2560" height="1600" alt="image" src="https://github.com/user-attachments/assets/bdb27528-c063-4545-b3ae-54fc06a497de" />
+
