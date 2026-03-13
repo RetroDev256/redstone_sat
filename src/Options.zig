@@ -2,13 +2,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 // how many inputs there are to the circuit
-input_count: u64,
+input_count: u32,
 // how many outputs there are to the circuit
-output_count: u64,
+output_count: u32,
 // how many blocks [west to east] the circuit is
-width: u64,
+width: u32,
 // how many blocks [north to south] the circuit is
-length: u64,
+length: u32,
 // truth table that the circuit must satisfy
 truth: []const []const struct { []const u1, u1 },
 
@@ -35,9 +35,9 @@ block_forced: ?[]const []const u1,
 dust_forced: ?[]const []const u1,
 
 // maximum number of redstone dusts
-max_dust: ?u64,
+max_dust: ?u32,
 // maximum number of redstone torches
-max_torch: ?u64,
+max_torch: ?u32,
 
 // allow placement of north facing torches
 allow_n_torch: bool,
@@ -74,7 +74,7 @@ redirect_input_edge_dust: bool,
 redirect_output_edge_dust: bool,
 
 // enforce acyclic graph with some bits per cell
-transition_bits: u64,
+transition_bits: u32,
 
 pub fn init(gpa: Allocator, source: [:0]const u8) !@This() {
     @setEvalBranchQuota(10_000); // for fromSliceAlloc
@@ -103,10 +103,10 @@ pub fn deinit(self: *const @This(), gpa: Allocator) void {
     std.zon.parse.free(gpa, self.*);
 }
 
-pub fn area(self: *const @This()) u64 {
+pub fn area(self: *const @This()) u32 {
     return self.width * self.length;
 }
 
-pub fn states(self: *const @This()) u64 {
-    return @as(u64, 1) << @intCast(self.input_count);
+pub fn states(self: *const @This()) u32 {
+    return @as(u32, 1) << @intCast(self.input_count);
 }

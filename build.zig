@@ -1,12 +1,26 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    const optimize = b.standardOptimizeOption(.{});
+    const target = b.standardTargetOptions(.{});
+
+    const libkissat = b.dependency("libkissat", .{
+        .optimize = optimize,
+        .no_options = true,
+        .target = target,
+        .quiet = false,
+        .sat = true,
+    });
+
     const exe = b.addExecutable(.{
         .name = "redstone_sat",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
-            .target = b.standardTargetOptions(.{}),
-            .optimize = b.standardOptimizeOption(.{}),
+            .optimize = optimize,
+            .target = target,
+            .imports = &.{
+                .{ .name = "kissat", .module = libkissat.module("libkissat") },
+            },
         }),
     });
 

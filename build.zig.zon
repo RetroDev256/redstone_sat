@@ -2,7 +2,12 @@
     .name = .redstone_sat,
     .version = "0.0.0",
     .fingerprint = 0x5b9aab2bb0dfbc17,
-    .dependencies = .{},
+    .dependencies = .{
+        .libkissat = .{
+            .url = "git+https://github.com/RetroDev256/libkissat#36e0331e8dca00a42d3cf7fd6435c826c05747a9",
+            .hash = "libkissat-4.0.4-sTTXPS82AADf9n8wthjGQmI2ci5AuOz_3ThkM1kql53Y",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
