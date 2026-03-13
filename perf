@@ -3,13 +3,13 @@ set -euo pipefail
 
 sudo -v # ask for password, cache credentials
 
-# Wait until kissat exists
-while ! pgrep -x kissat >/dev/null; do
+# Wait until redstone_sat exists
+while ! pgrep -x redstone_sat >/dev/null; do
     sleep 0.01
 done
 
 BEST_CORE="8,11"
-PID="$(pgrep -x kissat)"
+PID="$(pgrep -x redstone_sat)"
 
 echo 0 > sudo /proc/sys/kernel/randomize_va_space
 sudo cpupower frequency-set -g performance

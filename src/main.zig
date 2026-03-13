@@ -11,46 +11,19 @@ const Bits = cnf.Bits;
 
 // ----------------------------------------------------------------------- MAIN
 
-pub fn main(init: std.process.Init.Minimal) !void {
-
+pub fn main() !void {
     // Initialize process
 
     const gpa = std.heap.smp_allocator;
-
     var threaded: Io.Threaded = .init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
-
-    // Print the usage of our program on error
-    // Indicate error by exiting with status 1
-
-    var process: []const u8 = "UNKNOWN";
-
-    errdefer {
-        std.debug.print(
-            \\ USAGE: {s} [CONFIG]
-            \\   CONFIG:
-            \\     * Path to valid .zon config
-            \\
-        , .{process});
-    }
-
-    // Capture the CLI arguments
-
-    const ArgsIterator = std.process.Args.Iterator;
-    var args: ArgsIterator = try .initAllocator(init.args, gpa);
-    defer args.deinit();
-
-    process = args.next() orelse
-        return error.LackingArgs;
-    const config_path = args.next() orelse
-        return error.LackingArgs;
 
     // Read the configuation and parse into an options struct
 
     const cwd = std.Io.Dir.cwd();
     const config_text = try Io.Dir.readFileAllocOptions( //
-        cwd, io, config_path, gpa, .unlimited, .@"1", 0);
+        cwd, io, "problem.zon", gpa, .unlimited, .@"1", 0);
     const config: Options = try .init(gpa, config_text);
     defer config.deinit(gpa);
 
