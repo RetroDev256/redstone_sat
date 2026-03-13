@@ -4,9 +4,9 @@
     // how many outputs there are to the circuit
     .output_count = 1,
     // how many blocks [west to east] the circuit is
-    .width = 4,
+    .width = 7,
     // how many blocks [north to south] the circuit is
-    .length = 4,
+    .length = 5,
     // truth table that the circuit must satisfy
     .truth = .{
         .{ // SUM
@@ -19,17 +19,19 @@
 
     // allowed positions for inputs
     .input_mask = .{
-        .{ 1, 0, 0, 0 },
-        .{ 1, 0, 0, 0 },
-        .{ 1, 0, 0, 0 },
-        .{ 1, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 0, 0, 0, 0, 0, 0 },
     },
     // allowed positions for outputs
     .output_mask = .{
-        .{ 0, 0, 0, 1 },
-        .{ 0, 0, 0, 1 },
-        .{ 0, 0, 0, 1 },
-        .{ 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
+        .{ 0, 0, 0, 0, 0, 0, 1 },
     },
     // allowed positions for torches
     .torch_mask = null,

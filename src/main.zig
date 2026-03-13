@@ -159,7 +159,7 @@ fn decodeMain(
                         const e = solver.value(vars.facingConnectAt(1, pos));
                         const s = solver.value(vars.facingConnectAt(2, pos));
                         const w = solver.value(vars.facingConnectAt(3, pos));
-                        const display = dustDisplay(row, col, n, e, s, w, 0); // TODO: POWER
+                        const display = dustDisplay(row, col, n, e, s, w);
                         try stdout.writeAll(display);
                     } else if (solver.value(vars.facingTorchAt(0, pos))) {
                         try stdout.writeAll(torchDisplay(row, col, 0));
@@ -210,21 +210,12 @@ fn dustDisplay(
     east: bool,
     south: bool,
     west: bool,
-    power: u4,
 ) []const u8 {
     if (row == 0 and col == 1 and north) return "𜶉𜶉";
     if (row == 1 and col == 2 and east) return "𜶉𜶉";
     if (row == 2 and col == 1 and south) return "𜶉𜶉";
     if (row == 1 and col == 0 and west) return "𜶉𜶉";
-
-    if (row == 1 and col == 1) {
-        return ([16][]const u8{
-            "00", "01", "02", "03",
-            "04", "05", "06", "07",
-            "08", "09", "10", "11",
-            "12", "13", "14", "15",
-        })[power];
-    }
+    if (row == 1 and col == 1) return "𜶉𜶉";
 
     return "  ";
 }
