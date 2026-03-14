@@ -72,6 +72,8 @@ both_io_spacing: bool,
 redirect_input_edge_dust: bool,
 // whether to redirect output dust on the edges
 redirect_output_edge_dust: bool,
+// edge dust redirects without any constraint
+override_edge_dust_any_redirect: bool,
 
 // enforce acyclic graph with some bits per cell
 transition_bits: u32,
@@ -81,10 +83,6 @@ pub fn init(gpa: Allocator, source: [:0]const u8) !@This() {
     const fromSliceAlloc = std.zon.parse.fromSliceAlloc;
     const self = try fromSliceAlloc(@This(), gpa, source, null, .{});
 
-    if (self.output_count == 0)
-        return error.ZeroOutputCount;
-    if (self.input_count == 0)
-        return error.ZeroInputCount;
     if (self.truth.len != self.output_count)
         return error.MismatchingOutputCount;
 

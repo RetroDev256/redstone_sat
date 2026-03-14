@@ -3,8 +3,7 @@ const assert = std.debug.assert;
 
 const Options = @import("Options.zig");
 const Solver = @import("Solver.zig");
-const cnf = @import("cnf.zig");
-const Bits = cnf.Bits;
+const Bits = Solver.Bits;
 
 // [position]
 dust: Bits, // position is dust
@@ -14,7 +13,7 @@ input: Bits, // position is input
 output: Bits, // position is output
 
 // [cardinal_direction] * [position]
-facing_redirect: [4]Bits, // redirection source to the cardinal directions
+// facing_redirect: [4]Bits, // redirection source to the cardinal directions
 facing_connect: [4]Bits, // dust connected to the cardinal directions
 facing_torch: [4]Bits, // torch facing in a particular direction
 
@@ -40,64 +39,58 @@ connected_on: [4]Bits, // dust is powered and connected in some direction
 // [state] - [position] - [signal_strength_bit_index]
 strength: Bits,
 
-pub fn init(opt: *const Options, solver: *Solver) @This() {
+pub fn init(opt: *const Options, sol: *Solver) @This() {
     const area = opt.area();
     const states = opt.states();
     const seg_bits = opt.transition_bits;
 
     return .{
-        .dust = solver.alloc(area),
-        .torch = solver.alloc(area),
-        .block = solver.alloc(area),
-        .input = solver.alloc(area),
-        .output = solver.alloc(area),
+        .dust = sol.alloc(area),
+        .torch = sol.alloc(area),
+        .block = sol.alloc(area),
+        .input = sol.alloc(area),
+        .output = sol.alloc(area),
 
-        .facing_redirect = .{
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
-        },
         .facing_connect = .{
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
         },
         .facing_torch = .{
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
-            solver.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
+            sol.alloc(area),
         },
 
-        .input_map = solver.alloc(opt.input_count * area),
+        .input_map = sol.alloc(opt.input_count * area),
 
-        .output_map = solver.alloc(opt.output_count * area),
+        .output_map = sol.alloc(opt.output_count * area),
 
-        .segment = solver.alloc(area * seg_bits),
+        .segment = sol.alloc(area * seg_bits),
 
-        .torch_on = solver.alloc(states * area),
-        .block_on = solver.alloc(states * area),
-        .override_on = solver.alloc(states * area),
-        .constrain_on = solver.alloc(states * area),
-        .constrain_off = solver.alloc(states * area),
+        .torch_on = sol.alloc(states * area),
+        .block_on = sol.alloc(states * area),
+        .override_on = sol.alloc(states * area),
+        .constrain_on = sol.alloc(states * area),
+        .constrain_off = sol.alloc(states * area),
 
         .connected_on = .{
-            solver.alloc(states * area),
-            solver.alloc(states * area),
-            solver.alloc(states * area),
-            solver.alloc(states * area),
+            sol.alloc(states * area),
+            sol.alloc(states * area),
+            sol.alloc(states * area),
+            sol.alloc(states * area),
         },
 
-        .strength = solver.alloc(states * area * 15),
+        .strength = sol.alloc(states * area * 15),
     };
 }
 
-pub fn facingRedirectAt(self: *const @This(), dir: usize, pos: usize) usize {
-    assert(dir < 4);
-    return self.facing_redirect[dir].at(pos);
-}
+// pub fn facingRedirectAt(self: *const @This(), dir: usize, pos: usize) usize {
+//     assert(dir < 4);
+//     return self.facing_redirect[dir].at(pos);
+// }
 
 pub fn facingConnectAt(self: *const @This(), dir: usize, pos: usize) usize {
     assert(dir < 4);

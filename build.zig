@@ -8,7 +8,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .no_options = true,
         .target = target,
-        .quiet = false,
         .sat = true,
     });
 

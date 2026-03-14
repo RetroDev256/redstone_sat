@@ -6,8 +6,7 @@ const Io = std.Io;
 const Variables = @import("Variables.zig");
 const Options = @import("Options.zig");
 const Solver = @import("Solver.zig");
-const cnf = @import("cnf.zig");
-const Bits = cnf.Bits;
+const Bits = Solver.Bits;
 
 // ----------------------------------------------------------------------- MAIN
 
@@ -29,20 +28,20 @@ pub fn main() !void {
 
     // Run the target program mode
 
-    var solver: Solver = try .init();
-    defer solver.deinit();
+    var sol: Solver = try .init();
+    defer sol.deinit();
 
-    const vars = try encodeMain(&solver, &config);
-    switch (solver.solve()) {
+    const vars = try encodeMain(&sol, &config);
+    switch (sol.solve()) {
         .interrupted => std.debug.print("Solver interrupted.\n", .{}),
         .unsat => std.debug.print("Problem is UNSATISFIABLE\n", .{}),
-        .sat => try decodeMain(io, &solver, &vars, &config),
+        .sat => try decodeMain(io, &sol, &vars, &config),
     }
 }
 
-fn encodeMain(solver: *Solver, opt: *const Options) !Variables {
+fn encodeMain(sol: *Solver, opt: *const Options) !Variables {
     // Run all of the functions that constrain the CNF
-    const vars: Variables = .init(opt, solver);
+    const vars: Variables = .init(opt, sol);
 
     const function_name_list: []const []const u8 = &.{
         "blockMaps",
@@ -71,7 +70,7 @@ fn encodeMain(solver: *Solver, opt: *const Options) !Variables {
         "torchAndBlockOutput",
         "connectedPoweredDust",
         "outputMapCardinality",
-        "dustRedirectionSources",
+        "torchFacingRestrictions",
         "inputOutputConstrainOff",
         "unaryStrengthsAndSegments",
         "inputOutputMapPositionMatch",
@@ -81,7 +80,7 @@ fn encodeMain(solver: *Solver, opt: *const Options) !Variables {
     inline for (function_name_list, 0..) |name, idx| {
         const fmt_args = .{ idx + 1, function_name_list.len, name };
         std.debug.print("{} / {} - {s}...\n", fmt_args);
-        try @field(@This(), name)(solver, &vars, opt);
+        try @field(@This(), name)(sol, &vars, opt);
     }
 
     return vars;
@@ -89,7 +88,7 @@ fn encodeMain(solver: *Solver, opt: *const Options) !Variables {
 
 fn decodeMain(
     io: Io,
-    solver: *const Solver,
+    sol: *const Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -107,13 +106,13 @@ fn decodeMain(
                 const pos = x + z * opt.width;
 
                 const new_color = blockColor(
-                    solver.value(vars.input.at(pos)),
-                    solver.value(vars.output.at(pos)),
-                    solver.value(vars.block.at(pos)),
-                    solver.value(vars.torch.at(pos)),
-                    solver.value(vars.torch_on.at(pos)),
-                    solver.value(vars.dust.at(pos)),
-                    solver.value(vars.strengthAt(opt, 0, pos).at(0)),
+                    sol.value(vars.input.at(pos)),
+                    sol.value(vars.output.at(pos)),
+                    sol.value(vars.block.at(pos)),
+                    sol.value(vars.torch.at(pos)),
+                    sol.value(vars.torch_on.at(pos)),
+                    sol.value(vars.dust.at(pos)),
+                    sol.value(vars.strengthAt(opt, 0, pos).at(0)),
                 );
 
                 if (new_color) |color| {
@@ -127,22 +126,22 @@ fn decodeMain(
                     const row: u2 = @intCast(sub_row);
                     const col: u2 = @intCast(sub_col);
 
-                    if (solver.value(vars.dust.at(pos))) {
-                        const n = solver.value(vars.facingConnectAt(0, pos));
-                        const e = solver.value(vars.facingConnectAt(1, pos));
-                        const s = solver.value(vars.facingConnectAt(2, pos));
-                        const w = solver.value(vars.facingConnectAt(3, pos));
+                    if (sol.value(vars.dust.at(pos))) {
+                        const n = sol.value(vars.facingConnectAt(0, pos));
+                        const e = sol.value(vars.facingConnectAt(1, pos));
+                        const s = sol.value(vars.facingConnectAt(2, pos));
+                        const w = sol.value(vars.facingConnectAt(3, pos));
                         const display = dustDisplay(row, col, n, e, s, w);
                         try stdout.writeAll(display);
-                    } else if (solver.value(vars.facingTorchAt(0, pos))) {
+                    } else if (sol.value(vars.facingTorchAt(0, pos))) {
                         try stdout.writeAll(torchDisplay(row, col, 0));
-                    } else if (solver.value(vars.facingTorchAt(1, pos))) {
+                    } else if (sol.value(vars.facingTorchAt(1, pos))) {
                         try stdout.writeAll(torchDisplay(row, col, 1));
-                    } else if (solver.value(vars.facingTorchAt(2, pos))) {
+                    } else if (sol.value(vars.facingTorchAt(2, pos))) {
                         try stdout.writeAll(torchDisplay(row, col, 2));
-                    } else if (solver.value(vars.facingTorchAt(3, pos))) {
+                    } else if (sol.value(vars.facingTorchAt(3, pos))) {
                         try stdout.writeAll(torchDisplay(row, col, 3));
-                    } else if (solver.value(vars.block.at(pos))) {
+                    } else if (sol.value(vars.block.at(pos))) {
                         try stdout.writeAll(blockDisplay(row, col));
                     } else {
                         try stdout.writeAll(unknownDisplay(row, col));
@@ -238,7 +237,7 @@ fn cardinal(opt: *const Options, pos: usize, dir: usize) ?usize {
 
 // Allowed positions for inputs, outputs, torches, blocks, and dust
 fn blockMaps(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -248,25 +247,25 @@ fn blockMaps(
 
         // Inputs are not to be placed where they aren't allowed
         if (opt.input_mask) |mask| if (mask[z][x] != 1)
-            cnf.bitfalse(solver, vars.input.at(pos));
+            sol.bitfalse(vars.input.at(pos));
         // Outputs are not to be placed where they aren't allowed
         if (opt.output_mask) |mask| if (mask[z][x] != 1)
-            cnf.bitfalse(solver, vars.output.at(pos));
+            sol.bitfalse(vars.output.at(pos));
         // Torches are not to be placed where they aren't allowed
         if (opt.torch_mask) |mask| if (mask[z][x] != 1)
-            cnf.bitfalse(solver, vars.torch.at(pos));
+            sol.bitfalse(vars.torch.at(pos));
         // Blocks are not to be placed where they aren't allowed
         if (opt.block_mask) |mask| if (mask[z][x] != 1)
-            cnf.bitfalse(solver, vars.block.at(pos));
+            sol.bitfalse(vars.block.at(pos));
         // Dusts are not to be placed where they aren't allowed
         if (opt.dust_mask) |mask| if (mask[z][x] != 1)
-            cnf.bitfalse(solver, vars.dust.at(pos));
+            sol.bitfalse(vars.dust.at(pos));
     }
 }
 
 // Enforced positions for inputs, outputs, torches, blocks, and dust
 fn blockForced(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -276,25 +275,25 @@ fn blockForced(
 
         // Inputs are to be placed where they are forced
         if (opt.input_forced) |forced| if (forced[z][x] == 1)
-            cnf.bittrue(solver, vars.input.at(pos));
+            sol.bittrue(vars.input.at(pos));
         // Outputs are to be placed where they are forced
         if (opt.output_forced) |forced| if (forced[z][x] == 1)
-            cnf.bittrue(solver, vars.output.at(pos));
+            sol.bittrue(vars.output.at(pos));
         // Torches are to be placed where they are forced
         if (opt.torch_forced) |forced| if (forced[z][x] == 1)
-            cnf.bittrue(solver, vars.torch.at(pos));
+            sol.bittrue(vars.torch.at(pos));
         // Blocks are to be placed where they are forced
         if (opt.block_forced) |forced| if (forced[z][x] == 1)
-            cnf.bittrue(solver, vars.block.at(pos));
+            sol.bittrue(vars.block.at(pos));
         // Dusts are to be placed where they are forced
         if (opt.dust_forced) |forced| if (forced[z][x] == 1)
-            cnf.bittrue(solver, vars.dust.at(pos));
+            sol.bittrue(vars.dust.at(pos));
     }
 }
 
 // Prohibits air, dust, torch, and blocks from overlapping
 fn blockSingularity(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -308,18 +307,18 @@ fn blockSingularity(
         const b = vars.block.at(pos);
 
         // At least one of D, T, B is true
-        cnf.clause(solver, &.{ d, t, b }, &.{ 1, 1, 1 });
+        sol.clause(&.{ d, t, b }, &.{ 1, 1, 1 });
 
         // No two can be true at the same time
-        cnf.clause(solver, &.{ d, t }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ t, b }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ b, d }, &.{ 0, 0 });
+        sol.clause(&.{ d, t }, &.{ 0, 0 });
+        sol.clause(&.{ t, b }, &.{ 0, 0 });
+        sol.clause(&.{ b, d }, &.{ 0, 0 });
     }
 }
 
 // Prohibits torch variants from overlapping
 fn torchDistinctness(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -331,25 +330,24 @@ fn torchDistinctness(
         const w = vars.facingTorchAt(3, pos);
 
         // n, e, s, w, imply t
-        cnf.bitimp(solver, n, t);
-        cnf.bitimp(solver, e, t);
-        cnf.bitimp(solver, s, t);
-        cnf.bitimp(solver, w, t);
+        sol.clause(&.{ n, t }, &.{ 0, 1 });
+        sol.clause(&.{ e, t }, &.{ 0, 1 });
+        sol.clause(&.{ s, t }, &.{ 0, 1 });
+        sol.clause(&.{ w, t }, &.{ 0, 1 });
 
         // t implies n, e, s, OR w
-        cnf.clause(
-            solver,
+        sol.clause(
             &.{ t, n, e, s, w },
             &.{ 0, 1, 1, 1, 1 },
         );
 
         // no two directions can coexist
-        cnf.clause(solver, &.{ n, e }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ n, s }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ n, w }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ e, s }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ e, w }, &.{ 0, 0 });
-        cnf.clause(solver, &.{ s, w }, &.{ 0, 0 });
+        sol.clause(&.{ n, e }, &.{ 0, 0 });
+        sol.clause(&.{ n, s }, &.{ 0, 0 });
+        sol.clause(&.{ n, w }, &.{ 0, 0 });
+        sol.clause(&.{ e, s }, &.{ 0, 0 });
+        sol.clause(&.{ e, w }, &.{ 0, 0 });
+        sol.clause(&.{ s, w }, &.{ 0, 0 });
     }
 }
 
@@ -357,7 +355,7 @@ fn torchDistinctness(
 // facing torches have a block to the south, east facing torches have a block
 // to the west, south facing torches have a block to the north, et cetera.
 fn torchBlockSupports(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -366,9 +364,9 @@ fn torchBlockSupports(
             const torch = vars.facingTorchAt(dir, pos);
             if (cardinal(opt, pos, (dir + 2) % 4)) |card| {
                 const block = vars.block.at(card);
-                cnf.bitimp(solver, torch, block);
+                sol.clause(&.{ torch, block }, &.{ 0, 1 });
             } else {
-                cnf.bitfalse(solver, torch);
+                sol.bitfalse(torch);
             }
         }
     }
@@ -377,7 +375,7 @@ fn torchBlockSupports(
 // Prevent cardinal inputs and outputs from touching each other, depending
 // on the configuration of input-input, output-output, or input-output
 fn inputOutputSpacing(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -387,28 +385,28 @@ fn inputOutputSpacing(
         for (0..2) |dir| if (cardinal(opt, pos, dir)) |card| {
             // prevent inputs from touching cardinal inputs
             if (opt.input_spacing) {
-                cnf.part(solver, vars.input.at(pos), 0);
-                cnf.part(solver, vars.input.at(card), 0);
-                cnf.end(solver);
+                sol.part(vars.input.at(pos), 0);
+                sol.part(vars.input.at(card), 0);
+                sol.end();
             }
 
             // prevent outputs from touching cardinal outputs
             if (opt.output_spacing) {
-                cnf.part(solver, vars.output.at(pos), 0);
-                cnf.part(solver, vars.output.at(card), 0);
-                cnf.end(solver);
+                sol.part(vars.output.at(pos), 0);
+                sol.part(vars.output.at(card), 0);
+                sol.end();
             }
 
             // prevent inputs from touching cardinal outputs
             if (opt.both_io_spacing) {
                 // INPUT -> OUTPUT
-                cnf.part(solver, vars.input.at(pos), 0);
-                cnf.part(solver, vars.output.at(card), 0);
-                cnf.end(solver);
+                sol.part(vars.input.at(pos), 0);
+                sol.part(vars.output.at(card), 0);
+                sol.end();
                 // OUTPUT -> INPUT
-                cnf.part(solver, vars.output.at(pos), 0);
-                cnf.part(solver, vars.input.at(card), 0);
-                cnf.end(solver);
+                sol.part(vars.output.at(pos), 0);
+                sol.part(vars.input.at(card), 0);
+                sol.end();
             }
         };
     }
@@ -417,32 +415,32 @@ fn inputOutputSpacing(
 // make torches require cardinal dust
 // OR act as an output
 fn torchDustConnection(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
         // EITHER: there is no torch at this coordinate
-        cnf.part(solver, vars.torch.at(pos), 0);
+        sol.part(vars.torch.at(pos), 0);
 
         // OR: the torch is set to be an output
         if (opt.allow_torch_output)
-            cnf.part(solver, vars.output.at(pos), 1);
+            sol.part(vars.output.at(pos), 1);
 
         // OR: There is a dust offset from the torch
         for (0..4) |dir|
             if (cardinal(opt, pos, dir)) |card|
-                cnf.part(solver, vars.dust.at(card), 1);
+                sol.part(vars.dust.at(card), 1);
 
         // Torches imply one connected dust to it's sides,
         // or it could be the case that it is an output.
-        cnf.end(solver);
+        sol.end();
     }
 }
 
 // restrict the number of inputs
 fn inputCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -450,19 +448,19 @@ fn inputCardinality(
         0 => assert(false), // checked in Options.init()
         1 => {
             // Exactly of the blocks is an input
-            cnf.cardinalityOne(solver, vars.input, null);
+            sol.cardinalityOne(vars.input, null);
         },
         else => {
             // Count the number bits and constrain to the input_count
-            const cardinality = cnf.unaryTotalize(solver, vars.input);
-            cnf.unaryConstrainEQVal(solver, cardinality, opt.input_count);
+            const cardinality = sol.unaryTotalize(vars.input);
+            sol.unaryConstrainEQVal(cardinality, opt.input_count);
         },
     }
 }
 
 // restrict the number of outputs
 fn outputCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -470,19 +468,19 @@ fn outputCardinality(
         0 => assert(false), // checked in Options.init()
         1 => {
             // Exactly of the blocks is an output
-            cnf.cardinalityOne(solver, vars.output, null);
+            sol.cardinalityOne(vars.output, null);
         },
         else => {
             // Count the number bits and constrain to the output_count
-            const cardinality = cnf.unaryTotalize(solver, vars.output);
-            cnf.unaryConstrainEQVal(solver, cardinality, opt.output_count);
+            const cardinality = sol.unaryTotalize(vars.output);
+            sol.unaryConstrainEQVal(cardinality, opt.output_count);
         },
     }
 }
 
 // restrict the number of dusts
 fn dustCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -493,34 +491,34 @@ fn dustCardinality(
         0 => {
             // Zero dust means that all are not dust
             for (0..opt.area()) |pos|
-                cnf.bitfalse(solver, vars.dust.at(pos));
+                sol.bitfalse(vars.dust.at(pos));
         },
         1 => {
             // At least one of the blocks is a dust
             for (0..opt.area()) |pos|
-                cnf.part(solver, vars.dust.at(pos), 1);
-            cnf.end(solver);
+                sol.part(vars.dust.at(pos), 1);
+            sol.end();
 
             // At most one of the blocks is a dust
             for (0..opt.area()) |lhs| {
                 for (0..lhs) |rhs| {
                     const a = vars.dust.at(lhs);
                     const b = vars.dust.at(rhs);
-                    cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                    sol.clause(&.{ a, b }, &.{ 0, 0 });
                 }
             }
         },
         else => {
             // Count the number bits and constrain to the count
-            const cardinality = cnf.unaryTotalize(solver, vars.dust);
-            cnf.unaryConstrainLEVal(solver, cardinality, count);
+            const cardinality = sol.unaryTotalize(vars.dust);
+            sol.unaryConstrainLEVal(cardinality, count);
         },
     }
 }
 
 // restrict the number of torches
 fn torchCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -531,162 +529,245 @@ fn torchCardinality(
         0 => {
             // Zero torch means that all are not torch
             for (0..opt.area()) |pos|
-                cnf.bitfalse(solver, vars.torch.at(pos));
+                sol.bitfalse(vars.torch.at(pos));
         },
         1 => {
             // At least one of the blocks is a torch
             for (0..opt.area()) |pos|
-                cnf.part(solver, vars.torch.at(pos), 1);
-            cnf.end(solver);
+                sol.part(vars.torch.at(pos), 1);
+            sol.end();
 
             // At most one of the blocks is a torch
             for (0..opt.area()) |lhs| {
                 for (0..lhs) |rhs| {
                     const a = vars.torch.at(lhs);
                     const b = vars.torch.at(rhs);
-                    cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                    sol.clause(&.{ a, b }, &.{ 0, 0 });
                 }
             }
         },
         else => {
             // Count the number bits and constrain to the count
-            const cardinality = cnf.unaryTotalize(solver, vars.torch);
-            cnf.unaryConstrainLEVal(solver, cardinality, count);
+            const cardinality = sol.unaryTotalize(vars.torch);
+            sol.unaryConstrainLEVal(cardinality, count);
         },
     }
 }
 
-// constrain cardinal dust redirection sources
-fn dustRedirectionSources(
-    solver: *Solver,
+// based on the options, limit what torches can appear
+fn torchFacingRestrictions(
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
+        if (!opt.allow_n_torch)
+            sol.bitfalse(vars.facingTorchAt(0, pos));
+        if (!opt.allow_e_torch)
+            sol.bitfalse(vars.facingTorchAt(1, pos));
+        if (!opt.allow_s_torch)
+            sol.bitfalse(vars.facingTorchAt(2, pos));
+        if (!opt.allow_w_torch)
+            sol.bitfalse(vars.facingTorchAt(3, pos));
+    }
+}
+
+// constrain connections of dust blocks
+fn dustConnection(
+    sol: *Solver,
+    vars: *const Variables,
+    opt: *const Options,
+) !void {
+    // Whether input dust will redirect on edges
+    const r_inp = opt.redirect_input_edge_dust;
+    // Whether output dust will redirect on edges
+    const r_out = opt.redirect_output_edge_dust;
+
+    for (0..opt.area()) |pos| {
+        // Whether the current cell is dust
+        const d = vars.dust.at(pos);
+        // Whether the current cell is input
+        const i = vars.input.at(pos);
+        // Whether the current cell is output
+        const o = vars.output.at(pos);
+
         for (0..4) |dir| {
-            // The direction that we will be redirecting
-            const redirect = vars.facingRedirectAt(dir, pos);
+            const e_dir = (dir + 1) % 4;
+            const w_dir = (dir + 3) % 4;
 
-            if (cardinal(opt, pos, dir)) |card| {
-                // The direction we are observing is in bounds, so it only will
-                // matter if the block in this direction is a torch or dust.
+            // Whether there is a connection NORTH
+            const c = vars.facingConnectAt(dir, pos);
 
-                const t_off = vars.torch.at(card);
-                const d_off = vars.dust.at(card);
-                cnf.bitor(solver, t_off, d_off, redirect);
+            if (cardinal(opt, pos, dir)) |n| {
+                const n_b = vars.block.at(n);
+
+                if (cardinal(opt, pos, w_dir)) |w| {
+                    const w_b = vars.block.at(w);
+
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+
+                        // DUST AND W_BLOCK AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, e_b, c }, &.{ 0, 0, 0, 1 });
+                        // DUST AND NOT N_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, n_b, c }, &.{ 0, 1, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // NOT E_BLOCK AND N_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ w_b, n_b, c }, &.{ 1, 0, 0 });
+                        // NOT E_BLOCK AND N_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ e_b, n_b, c }, &.{ 1, 0, 0 });
+                    } else {
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // DUST AND W_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, c }, &.{ 0, 0, 1 });
+                        // DUST AND NOT N_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, n_b, c }, &.{ 0, 1, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // INPUT AND N_BLOCK IMPLIES NOT CONNECTION
+                        if (r_inp) sol.clause(&.{ i, n_b, c }, &.{ 0, 0, 0 });
+                        // OUTPUT AND N_BLOCK IMPLIES NOT CONNECTION
+                        if (r_out) sol.clause(&.{ o, n_b, c }, &.{ 0, 0, 0 });
+                        // NOT W_BLOCK AND N_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ w_b, n_b, c }, &.{ 1, 0, 0 });
+                    }
+                } else {
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // DUST AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, e_b, c }, &.{ 0, 0, 1 });
+                        // DUST AND NOT N_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, n_b, c }, &.{ 0, 1, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // INPUT AND N_BLOCK IMPLIES NOT CONNECTION
+                        if (r_inp) sol.clause(&.{ i, n_b, c }, &.{ 0, 0, 0 });
+                        // OUTPUT AND N_BLOCK IMPLIES NOT CONNECTION
+                        if (r_out) sol.clause(&.{ o, n_b, c }, &.{ 0, 0, 0 });
+                        // NOT E_BLOCK AND N_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ e_b, n_b, c }, &.{ 1, 0, 0 });
+                    } else {
+                        // CONNECTION EQUALS DUST
+                        sol.biteql(d, c);
+                    }
+                }
+            } else if (!opt.override_edge_dust_any_redirect) {
+                if (cardinal(opt, pos, w_dir)) |w| {
+                    const w_b = vars.block.at(w);
+
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+
+                        // DUST AND W_BLOCK AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, e_b, c }, &.{ 0, 0, 0, 1 });
+                        // INPUT AND DUST IMPLIES CONNECTION
+                        if (r_inp) sol.clause(&.{ d, i, c }, &.{ 0, 0, 1 });
+                        // OUTPUT AND DUST IMPLIES CONNECTION
+                        if (r_inp) sol.clause(&.{ d, o, c }, &.{ 0, 0, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // NOT W_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ w_b, c }, &.{ 1, 0 });
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // NOT E_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ e_b, c }, &.{ 1, 0 });
+                    } else {
+                        // DUST AND W_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, c }, &.{ 0, 0, 1 });
+                        // INPUT AND DUST IMPLIES CONNECTION
+                        if (r_inp) sol.clause(&.{ d, i, c }, &.{ 0, 0, 1 });
+                        // OUTPUT AND DUST IMPLIES CONNECTION
+                        if (r_out) sol.clause(&.{ d, o, c }, &.{ 0, 0, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // NOT W_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ w_b, c }, &.{ 1, 0 });
+                    }
+                } else {
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+
+                        // DUST AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, e_b, c }, &.{ 0, 0, 1 });
+                        // INPUT AND DUST IMPLIES CONNECTION
+                        if (r_inp) sol.clause(&.{ d, i, c }, &.{ 0, 0, 1 });
+                        // OUTPUT AND DUST IMPLIES CONNECTION
+                        if (r_out) sol.clause(&.{ d, o, c }, &.{ 0, 0, 1 });
+
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                        // NOT INPUT AND -
+                        if (r_inp) sol.part(i, 1);
+                        // NOT OUTPUT AND -
+                        if (r_out) sol.part(o, 1);
+                        // NOT E_BLOCK IMPLIES NOT CONNECTION
+                        sol.clause(&.{ e_b, c }, &.{ 1, 0 });
+                    } else {
+                        // CONNECTION EQUALS DUST
+                        sol.biteql(d, c);
+                    }
+                }
             } else {
-                // The direction we are observing is out of bounds, so the dust
-                // will only redirect if the dust is an input (and we allow
-                // input dust to redirect), or if the dust is an output (and we
-                // allow output dust to redirect).
+                if (cardinal(opt, pos, w_dir)) |w| {
+                    const w_b = vars.block.at(w);
 
-                const out = vars.output.at(pos);
-                const inp = vars.input.at(pos);
-
-                const r_inp = @intFromBool(opt.redirect_input_edge_dust);
-                const r_out = @intFromBool(opt.redirect_output_edge_dust);
-
-                switch ((@as(u2, r_inp) << 1) | r_out) {
-                    // The edge dust can't ever redirect
-                    0b00 => cnf.bitfalse(solver, redirect),
-                    // The dust redirects if it is an output
-                    0b01 => cnf.biteql(solver, out, redirect),
-                    // The dust redirects if it is an input
-                    0b10 => cnf.biteql(solver, inp, redirect),
-                    // The dust redirects if input or output
-                    0b11 => cnf.bitor(solver, inp, out, redirect),
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+                        // DUST AND W_BLOCK AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, e_b, c }, &.{ 0, 0, 0, 1 });
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                    } else {
+                        // DUST AND W_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, w_b, c }, &.{ 0, 0, 1 });
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                    }
+                } else {
+                    if (cardinal(opt, pos, e_dir)) |e| {
+                        const e_b = vars.block.at(e);
+                        // DUST AND E_BLOCK IMPLIES CONNECTION
+                        sol.clause(&.{ d, e_b, c }, &.{ 0, 0, 1 });
+                        // NOT DUST IMPLIES NOT CONNECTION
+                        sol.clause(&.{ d, c }, &.{ 1, 0 });
+                    } else {
+                        // CONNECTION EQUALS DUST
+                        sol.biteql(d, c);
+                    }
                 }
             }
         }
     }
 }
 
-// constrain connections of dust blocks
-fn dustConnection(
-    solver: *Solver,
-    vars: *const Variables,
-    opt: *const Options,
-) !void {
-    for (0..opt.area()) |pos| {
-        // d -> whether the current block is dust
-
-        const d = vars.dust.at(pos);
-
-        // n_r -> whether the north block can redirect
-        // e_r -> whether the east block can redirect
-        // s_r -> whether the south block can redirect
-        // w_r -> whether the west block can redirect
-
-        const n_r = vars.facingRedirectAt(0, pos);
-        const e_r = vars.facingRedirectAt(1, pos);
-        const s_r = vars.facingRedirectAt(2, pos);
-        const w_r = vars.facingRedirectAt(3, pos);
-
-        // n_c -> whether the dust connects north
-        // e_c -> whether the dust connects east
-        // s_c -> whether the dust connects south
-        // w_c -> whether the dust connects west
-
-        const n_c = vars.facingConnectAt(0, pos);
-        const e_c = vars.facingConnectAt(1, pos);
-        const s_c = vars.facingConnectAt(2, pos);
-        const w_c = vars.facingConnectAt(3, pos);
-
-        // (NOT d) -> (NOT n_c)
-        // (NOT d) -> (NOT e_c)
-        // (NOT d) -> (NOT s_c)
-        // (NOT d) -> (NOT w_c)
-
-        cnf.clause(solver, &.{ d, n_c }, &.{ 1, 0 });
-        cnf.clause(solver, &.{ d, e_c }, &.{ 1, 0 });
-        cnf.clause(solver, &.{ d, s_c }, &.{ 1, 0 });
-        cnf.clause(solver, &.{ d, w_c }, &.{ 1, 0 });
-
-        // (d AND n) -> n_c
-        // (d AND e) -> e_c
-        // (d AND s) -> s_c
-        // (d AND w) -> w_c
-
-        cnf.clause(solver, &.{ d, n_r, n_c }, &.{ 0, 0, 1 });
-        cnf.clause(solver, &.{ d, e_r, e_c }, &.{ 0, 0, 1 });
-        cnf.clause(solver, &.{ d, s_r, s_c }, &.{ 0, 0, 1 });
-        cnf.clause(solver, &.{ d, w_r, w_c }, &.{ 0, 0, 1 });
-
-        // (e AND NOT n) -> (NOT n_c)
-        // (n AND NOT e) -> (NOT e_c)
-        // (w AND NOT s) -> (NOT s_c)
-        // (s AND NOT w) -> (NOT w_c)
-
-        cnf.clause(solver, &.{ e_r, n_r, n_c }, &.{ 0, 1, 0 });
-        cnf.clause(solver, &.{ n_r, e_r, e_c }, &.{ 0, 1, 0 });
-        cnf.clause(solver, &.{ w_r, s_r, s_c }, &.{ 0, 1, 0 });
-        cnf.clause(solver, &.{ s_r, w_r, w_c }, &.{ 0, 1, 0 });
-
-        // (w AND NOT n AND NOT e) -> (NOT n_c)
-        // (s AND NOT n AND NOT e) -> (NOT e_c)
-        // (e AND NOT s AND NOT w) -> (NOT s_c)
-        // (n AND NOT s AND NOT w) -> (NOT w_c)
-
-        cnf.clause(solver, &.{ w_r, n_r, e_r, n_c }, &.{ 0, 1, 1, 0 });
-        cnf.clause(solver, &.{ s_r, n_r, e_r, e_c }, &.{ 0, 1, 1, 0 });
-        cnf.clause(solver, &.{ e_r, s_r, w_r, s_c }, &.{ 0, 1, 1, 0 });
-        cnf.clause(solver, &.{ n_r, s_r, w_r, w_c }, &.{ 0, 1, 1, 0 });
-
-        // (d AND NOT n AND NOT e AND NOT w) -> n_c
-        // (d AND NOT n AND NOT e AND NOT s) -> e_c
-        // (d AND NOT e AND NOT s AND NOT w) -> s_c
-        // (d AND NOT n AND NOT s AND NOT w) -> w_c
-
-        cnf.clause(solver, &.{ d, n_r, e_r, w_r, n_c }, &.{ 0, 1, 1, 1, 1 });
-        cnf.clause(solver, &.{ d, n_r, e_r, s_r, e_c }, &.{ 0, 1, 1, 1, 1 });
-        cnf.clause(solver, &.{ d, e_r, s_r, w_r, s_c }, &.{ 0, 1, 1, 1, 1 });
-        cnf.clause(solver, &.{ d, n_r, s_r, w_r, w_c }, &.{ 0, 1, 1, 1, 1 });
-    }
-}
-
 // constrain matching positions of input/output and input_map/output_map
 fn inputOutputMapPositionMatch(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -696,82 +777,82 @@ fn inputOutputMapPositionMatch(
         // No input mappings can exist without an input
         for (0..opt.input_count) |inp| {
             const inp_map = vars.inputMapAt(opt, inp, pos);
-            cnf.bitimp(solver, inp_map, vars.input.at(pos));
+            sol.clause(&.{ inp_map, vars.input.at(pos) }, &.{ 0, 1 });
         }
 
         // No output mappings can exist without an output
         for (0..opt.output_count) |out| {
             const out_map = vars.outputMapAt(opt, out, pos);
-            cnf.bitimp(solver, out_map, vars.output.at(pos));
+            sol.clause(&.{ out_map, vars.output.at(pos) }, &.{ 0, 1 });
         }
 
         // ----------------------------------------------- BACKWARD IMPLICATION
 
         // EITHER: there is no input here
-        cnf.part(solver, vars.input.at(pos), 0);
+        sol.part(vars.input.at(pos), 0);
         // OR: there is a mapping here
         for (0..opt.input_count) |inp|
-            cnf.part(solver, vars.inputMapAt(opt, inp, pos), 1);
+            sol.part(vars.inputMapAt(opt, inp, pos), 1);
         // No inputs can exist without a mapping
-        cnf.end(solver);
+        sol.end();
 
         // EITHER: there is no output here
-        cnf.part(solver, vars.output.at(pos), 0);
+        sol.part(vars.output.at(pos), 0);
         // OR: there is a mapping here
         for (0..opt.output_count) |out|
-            cnf.part(solver, vars.outputMapAt(opt, out, pos), 1);
+            sol.part(vars.outputMapAt(opt, out, pos), 1);
         // No outputs can exist without a mapping
-        cnf.end(solver);
+        sol.end();
     }
 }
 
 // constrain correct input block type
 fn inputBlockType(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
         // Either this is not an input
-        cnf.part(solver, vars.input.at(pos), 0);
+        sol.part(vars.input.at(pos), 0);
 
         // Or this is a block
         if (opt.allow_block_input)
-            cnf.part(solver, vars.block.at(pos), 1);
+            sol.part(vars.block.at(pos), 1);
 
         // Or this is a dust
         if (opt.allow_dust_input)
-            cnf.part(solver, vars.dust.at(pos), 1);
+            sol.part(vars.dust.at(pos), 1);
 
-        cnf.end(solver);
+        sol.end();
     }
 }
 
 // constrain correct output block type
 fn outputBlockType(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
         // Either this is not an output
-        cnf.part(solver, vars.output.at(pos), 0);
+        sol.part(vars.output.at(pos), 0);
 
         // Or this is a dust
         if (opt.allow_dust_output)
-            cnf.part(solver, vars.dust.at(pos), 1);
+            sol.part(vars.dust.at(pos), 1);
 
         // Or this is a torch
         if (opt.allow_torch_output)
-            cnf.part(solver, vars.torch.at(pos), 1);
+            sol.part(vars.torch.at(pos), 1);
 
-        cnf.end(solver);
+        sol.end();
     }
 }
 
 // constrain transitivity of inputs and outputs
 fn ioTransitivity(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -781,7 +862,7 @@ fn ioTransitivity(
             for (0..opt.input_count) |i_gt| for (0..i_gt) |i_lt| {
                 const a = vars.inputMapAt(opt, i_gt, p_hi);
                 const b = vars.inputMapAt(opt, i_lt, p_lo);
-                cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                sol.clause(&.{ a, b }, &.{ 0, 0 });
             };
         }
 
@@ -790,7 +871,7 @@ fn ioTransitivity(
             for (0..opt.output_count) |o_gt| for (0..o_gt) |o_lt| {
                 const a = vars.outputMapAt(opt, o_gt, p_hi);
                 const b = vars.outputMapAt(opt, o_lt, p_lo);
-                cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                sol.clause(&.{ a, b }, &.{ 0, 0 });
             };
         }
     };
@@ -798,7 +879,7 @@ fn ioTransitivity(
 
 // constrain cardinality of input_map
 fn inputMapCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -806,15 +887,15 @@ fn inputMapCardinality(
 
         // At least one position is mapped for each input
         for (0..opt.area()) |pos|
-            cnf.part(solver, vars.inputMapAt(opt, inp, pos), 1);
-        cnf.end(solver);
+            sol.part(vars.inputMapAt(opt, inp, pos), 1);
+        sol.end();
 
         // At most one position is mapped for each input
         for (0..opt.area()) |rhs| {
             for (0..rhs) |lhs| {
                 const a = vars.inputMapAt(opt, inp, lhs);
                 const b = vars.inputMapAt(opt, inp, rhs);
-                cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                sol.clause(&.{ a, b }, &.{ 0, 0 });
             }
         }
     }
@@ -822,22 +903,22 @@ fn inputMapCardinality(
 
 // constrain cardinality of output_map
 fn outputMapCardinality(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.output_count) |out| {
         // At least one position is mapped for each output
         for (0..opt.area()) |pos|
-            cnf.part(solver, vars.outputMapAt(opt, out, pos), 1);
-        cnf.end(solver);
+            sol.part(vars.outputMapAt(opt, out, pos), 1);
+        sol.end();
 
         // At most one position is mapped for each output
         for (0..opt.area()) |rhs| {
             for (0..rhs) |lhs| {
                 const a = vars.outputMapAt(opt, out, lhs);
                 const b = vars.outputMapAt(opt, out, rhs);
-                cnf.clause(solver, &.{ a, b }, &.{ 0, 0 });
+                sol.clause(&.{ a, b }, &.{ 0, 0 });
             }
         }
     }
@@ -845,7 +926,7 @@ fn outputMapCardinality(
 
 // prevent overlapping inputs
 fn inputOverlap(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -854,7 +935,7 @@ fn inputOverlap(
             for (0..opt.area()) |pos| {
                 const lhs = vars.inputMapAt(opt, lhs_idx, pos);
                 const rhs = vars.inputMapAt(opt, rhs_idx, pos);
-                cnf.clause(solver, &.{ lhs, rhs }, &.{ 0, 0 });
+                sol.clause(&.{ lhs, rhs }, &.{ 0, 0 });
             }
         }
     }
@@ -862,7 +943,7 @@ fn inputOverlap(
 
 // prevent overlapping outputs
 fn outputOverlap(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -871,7 +952,7 @@ fn outputOverlap(
             for (0..opt.area()) |pos| {
                 const lhs = vars.outputMapAt(opt, lhs_idx, pos);
                 const rhs = vars.outputMapAt(opt, rhs_idx, pos);
-                cnf.clause(solver, &.{ lhs, rhs }, &.{ 0, 0 });
+                sol.clause(&.{ lhs, rhs }, &.{ 0, 0 });
             }
         }
     }
@@ -879,7 +960,7 @@ fn outputOverlap(
 
 // determine if a block is currently powered
 fn blockPowered(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -898,39 +979,39 @@ fn blockPowered(
             for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                 const s = vars.strengthAt(opt, state, card).at(0);
                 const c = vars.facingConnectAt((dir + 2) % 4, card);
-                cnf.clause(solver, &.{ b, c, s, p }, &.{ 0, 0, 0, 1 });
+                sol.clause(&.{ b, c, s, p }, &.{ 0, 0, 0, 1 });
             };
 
             // If the current cell is a block and it was overridden to be
             // powered on (an input force it to be on), then it must be on.
 
-            cnf.clause(solver, &.{ b, o, p }, &.{ 0, 0, 1 });
+            sol.clause(&.{ b, o, p }, &.{ 0, 0, 1 });
 
             // -------------------- BACKWARD IMPLICATION - block is powered off
 
             // If not a block, this can't be powered as a block
-            cnf.clause(solver, &.{ b, p }, &.{ 1, 0 });
+            sol.clause(&.{ b, p }, &.{ 1, 0 });
 
             // EITHER: the block is unpowered
-            cnf.part(solver, p, 0);
+            sol.part(p, 0);
 
             // OR: the block is overridden to be powered
-            cnf.part(solver, o, 1);
+            sol.part(o, 1);
 
             // OR: an adjacent dust is connected and powered
             for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                 const rev = (dir + 2) % 4;
-                cnf.part(solver, vars.connectedOnAt(opt, rev, state, card), 1);
+                sol.part(vars.connectedOnAt(opt, rev, state, card), 1);
             };
 
-            cnf.end(solver);
+            sol.end();
         }
     }
 }
 
 // determine if a torch is currently powered
 fn torchPowered(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -943,17 +1024,17 @@ fn torchPowered(
 
                 // --------------------------------------- FORWARDS IMPLICATION
                 // EITHER: block powered, torch powered, or not the right torch
-                cnf.clause(solver, &.{ p, f_t, t_p }, &.{ 1, 0, 1 });
+                sol.clause(&.{ p, f_t, t_p }, &.{ 1, 0, 1 });
 
                 // -------------------------------------- BACKWARDS IMPLICATION
                 // EITHER: block unpowered, torch unpowered, or the right torch
-                cnf.clause(solver, &.{ p, f_t, t_p }, &.{ 0, 0, 0 });
+                sol.clause(&.{ p, f_t, t_p }, &.{ 0, 0, 0 });
             };
 
             // If a torch is powered, it implies it is a torch
             const p = vars.torchOnAt(opt, state, pos);
             const t = vars.torch.at(pos);
-            cnf.clause(solver, &.{ p, t }, &.{ 0, 1 });
+            sol.clause(&.{ p, t }, &.{ 0, 1 });
         }
     }
 }
@@ -984,7 +1065,7 @@ fn outputValue(opt: *const Options, state: usize, out: usize) ?u1 {
 
 // constrain override_on based on input_map & state
 fn inputOverrideOn(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -998,9 +1079,12 @@ fn inputOverrideOn(
             // to be TRUE, then whether the current cell is that input's
             // position will imply that the override is TRUE.
 
-            for (0..opt.input_count) |inp|
-                if (inputValue(state, inp) == 1)
-                    cnf.bitimp(solver, vars.inputMapAt(opt, inp, pos), o);
+            for (0..opt.input_count) |inp| {
+                if (inputValue(state, inp) == 1) {
+                    const m = vars.inputMapAt(opt, inp, pos);
+                    sol.clause(&.{ m, o }, &.{ 0, 1 });
+                }
+            }
 
             // ----------------- BACKWARD IMPLICATION - not overridden to be on
 
@@ -1009,20 +1093,20 @@ fn inputOverrideOn(
             // encoding a single CNF clause where either the override is FALSE,
             // or each input (if it is true in this state) is at this position.
 
-            cnf.part(solver, o, 0);
+            sol.part(o, 0);
 
             for (0..opt.input_count) |inp|
                 if (inputValue(state, inp) == 1)
-                    cnf.part(solver, vars.inputMapAt(opt, inp, pos), 1);
+                    sol.part(vars.inputMapAt(opt, inp, pos), 1);
 
-            cnf.end(solver);
+            sol.end();
         }
     }
 }
 
 // constrain constrain_off based on input_map & output_map & state
 fn inputOutputConstrainOff(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1035,42 +1119,49 @@ fn inputOutputConstrainOff(
             // For every single input, if the state of that input is supposed
             // to be FALSE, then if it is *that* input implies the constraint.
 
-            if (opt.input_isolation)
-                for (0..opt.input_count) |inp|
-                    if (inputValue(state, inp) == 0)
-                        cnf.bitimp(solver, vars.inputMapAt(opt, inp, pos), c);
+            if (opt.input_isolation) {
+                for (0..opt.input_count) |inp| {
+                    if (inputValue(state, inp) == 0) {
+                        const m = vars.inputMapAt(opt, inp, pos);
+                        sol.clause(&.{ m, c }, &.{ 0, 1 });
+                    }
+                }
+            }
 
             // For every single output, if the state of that output is supposed
             // to be FALSE, then if it is *that* output implies the constraint.
 
-            for (0..opt.output_count) |out|
-                if (outputValue(opt, state, out) == 0)
-                    cnf.bitimp(solver, vars.outputMapAt(opt, out, pos), c);
+            for (0..opt.output_count) |out| {
+                if (outputValue(opt, state, out) == 0) {
+                    const m = vars.outputMapAt(opt, out, pos);
+                    sol.clause(&.{ m, c }, &.{ 0, 1 });
+                }
+            }
 
             // --------------- BACKWARD IMPLICATION - not constrained to be off
 
             // EITHER: the cell is not constrained to be off
-            cnf.part(solver, c, 0);
+            sol.part(c, 0);
 
             // OR: there is an input and it is powered off
             if (opt.input_isolation)
                 for (0..opt.input_count) |inp|
                     if (inputValue(state, inp) == 0)
-                        cnf.part(solver, vars.inputMapAt(opt, inp, pos), 1);
+                        sol.part(vars.inputMapAt(opt, inp, pos), 1);
 
             // OR: there is an output and it is powered off
             for (0..opt.output_count) |out|
                 if (outputValue(opt, state, out) == 0)
-                    cnf.part(solver, vars.outputMapAt(opt, out, pos), 1);
+                    sol.part(vars.outputMapAt(opt, out, pos), 1);
 
-            cnf.end(solver);
+            sol.end();
         }
     }
 }
 
 // constrain constrain_on based on output_map & state
 fn outputConstrainOn(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1083,42 +1174,45 @@ fn outputConstrainOn(
             // For every single output, if the state of that output is supposed
             // to be TRUE, then the power is implied by if that cell is output.
 
-            for (0..opt.output_count) |out|
-                if (outputValue(opt, state, out) == 1)
-                    cnf.bitimp(solver, vars.outputMapAt(opt, out, pos), c);
+            for (0..opt.output_count) |out| {
+                if (outputValue(opt, state, out) == 1) {
+                    const m = vars.outputMapAt(opt, out, pos);
+                    sol.clause(&.{ m, c }, &.{ 0, 1 });
+                }
+            }
 
             // ---------------- BACKWARD IMPLICATION - not constrained to be on
 
             // EITHER: the cell is not constrained to be on
-            cnf.part(solver, c, 0);
+            sol.part(c, 0);
 
             // OR: there is an output and it is powered on
             for (0..opt.output_count) |out|
                 if (outputValue(opt, state, out) == 1)
-                    cnf.part(solver, vars.outputMapAt(opt, out, pos), 1);
+                    sol.part(vars.outputMapAt(opt, out, pos), 1);
 
-            cnf.end(solver);
+            sol.end();
         }
     }
 }
 
 // constrain all bitblasted numbers to be unary
 fn unaryStrengthsAndSegments(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
     for (0..opt.area()) |pos| {
-        cnf.unaryConstrain(solver, vars.segmentAt(opt, pos));
+        sol.unaryConstrain(vars.segmentAt(opt, pos));
         for (0..opt.states()) |state| {
-            cnf.unaryConstrain(solver, vars.strengthAt(opt, state, pos));
+            sol.unaryConstrain(vars.strengthAt(opt, state, pos));
         }
     }
 }
 
 // constrain torches and blocks to be on with constrain_on
 fn torchAndBlockOutput(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1131,9 +1225,9 @@ fn torchAndBlockOutput(
                 const t = vars.torch.at(pos);
                 const t_on = vars.torchOnAt(opt, state, pos);
                 // (constrain_on AND torch) implies torch_on
-                cnf.clause(solver, &.{ constrain_on, t, t_on }, &.{ 0, 0, 1 });
+                sol.clause(&.{ constrain_on, t, t_on }, &.{ 0, 0, 1 });
                 // (constrain_off AND torch) implies NOT torch_on
-                cnf.clause(solver, &.{ constrain_off, t, t_on }, &.{ 0, 0, 0 });
+                sol.clause(&.{ constrain_off, t, t_on }, &.{ 0, 0, 0 });
             }
         }
     }
@@ -1141,7 +1235,7 @@ fn torchAndBlockOutput(
 
 // determine if dust is cardinally connected AND on
 fn connectedPoweredDust(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1151,7 +1245,7 @@ fn connectedPoweredDust(
                 const c = vars.facingConnectAt(dir, pos);
                 const p = vars.strengthAt(opt, state, pos).at(0);
                 const c_p = vars.connectedOnAt(opt, dir, state, pos);
-                cnf.bitand(solver, c, p, c_p);
+                sol.bitand(c, p, c_p);
             }
         }
     }
@@ -1159,7 +1253,7 @@ fn connectedPoweredDust(
 
 // constrain signal strength and power of dust
 fn dustPowerStrengthPropagation(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1180,16 +1274,16 @@ fn dustPowerStrengthPropagation(
             // Dust is fully powered by adjacent powered torches
             for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                 const torch_on = vars.torchOnAt(opt, state, card);
-                cnf.clause(solver, &.{ torch_on, dust, maxxed }, &.{ 0, 0, 1 });
+                sol.clause(&.{ torch_on, dust, maxxed }, &.{ 0, 0, 1 });
             };
 
             // Dust is fully powered if overridden to be on (it is an input)
             const override_on = vars.overrideOnAt(opt, state, pos);
-            cnf.clause(solver, &.{ override_on, dust, maxxed }, &.{ 0, 0, 1 });
+            sol.clause(&.{ override_on, dust, maxxed }, &.{ 0, 0, 1 });
 
             // Dust is powered if constrained to be on (it is an output)
             const constrain_on = vars.constrainOnAt(opt, state, pos);
-            cnf.clause(solver, &.{ constrain_on, dust, powered }, &.{ 0, 0, 1 });
+            sol.clause(&.{ constrain_on, dust, powered }, &.{ 0, 0, 1 });
 
             // Dust strength is at least max(neighbors_strength) -| 1
             for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
@@ -1197,39 +1291,39 @@ fn dustPowerStrengthPropagation(
                 for (0..14) |bit| {
                     const src = source.at(bit + 1);
                     const dst = strength.at(bit);
-                    cnf.clause(solver, &.{ dust, src, dst }, &.{ 0, 0, 1 });
+                    sol.clause(&.{ dust, src, dst }, &.{ 0, 0, 1 });
                 }
             };
 
             // ------------------------------------------- BACKWARD IMPLICATION
 
             // Any dust power level implies that this is dust
-            cnf.clause(solver, &.{ powered, dust }, &.{ 0, 1 });
+            sol.clause(&.{ powered, dust }, &.{ 0, 1 });
 
             // Dust is not powered if constrained to be off (input or output)
             const constrain_off = vars.constrainOffAt(opt, state, pos);
-            cnf.clause(solver, &.{ constrain_off, powered }, &.{ 0, 0 });
+            sol.clause(&.{ constrain_off, powered }, &.{ 0, 0 });
 
             for (0..15) |bit| {
                 // EITHER: We are not at maximum signal strength
-                cnf.part(solver, strength.at(bit), 0);
+                sol.part(strength.at(bit), 0);
 
                 // OR: The dust has been overridden to be maxxed
-                cnf.part(solver, override_on, 1);
+                sol.part(override_on, 1);
 
                 // OR: An adjacent torch is currently powered on
                 for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
-                    cnf.part(solver, vars.torchOnAt(opt, state, card), 1);
+                    sol.part(vars.torchOnAt(opt, state, card), 1);
                 };
 
                 // OR: a cardinal strength bit at "bit + 1" is TRUE
                 for (0..4) |dir| if (cardinal(opt, pos, dir)) |card| {
                     const source = vars.strengthAt(opt, state, card);
                     if (bit < 14)
-                        cnf.part(solver, source.at(bit + 1), 1);
+                        sol.part(source.at(bit + 1), 1);
                 };
 
-                cnf.end(solver);
+                sol.end();
             }
         }
     }
@@ -1238,7 +1332,7 @@ fn dustPowerStrengthPropagation(
 // constrain segment values to ensure acyclic graph
 
 fn segmentTransitivity(
-    solver: *Solver,
+    sol: *Solver,
     vars: *const Variables,
     opt: *const Options,
 ) !void {
@@ -1273,9 +1367,9 @@ fn segmentTransitivity(
                 // The cardinal unary bit at <bit> for segment
                 const b = vars.segmentAt(opt, card).at(bit);
                 // (dust HERE & dust THERE & bit THERE) -------------> bit HERE
-                cnf.clause(solver, &.{ p_dust, c_dust, b, a }, &.{ 0, 0, 0, 1 });
+                sol.clause(&.{ p_dust, c_dust, b, a }, &.{ 0, 0, 0, 1 });
                 // (dust HERE & dust THERE & bit HERE) -------------> bit THERE
-                cnf.clause(solver, &.{ p_dust, c_dust, a, b }, &.{ 0, 0, 0, 1 });
+                sol.clause(&.{ p_dust, c_dust, a, b }, &.{ 0, 0, 0, 1 });
             }
 
             // ------ Torches have less ID than the block they are connected to
@@ -1286,12 +1380,12 @@ fn segmentTransitivity(
                 // The cardinal unary bit at <bit> for segment
                 const b = vars.segmentAt(opt, card).at(bit);
                 // (torch THERE & lower bit THERE) -----------> higher bit HERE
-                cnf.clause(solver, &.{ c_torch, b, a }, &.{ 0, 0, 1 });
+                sol.clause(&.{ c_torch, b, a }, &.{ 0, 0, 1 });
             }
             // facing torch THERE -----------------------> first unary bit HERE
-            cnf.clause(solver, &.{ c_torch, p_first }, &.{ 0, 1 });
+            sol.clause(&.{ c_torch, p_first }, &.{ 0, 1 });
             // facing torch THERE --------------------> NO last unary bit THERE
-            cnf.clause(solver, &.{ c_torch, c_last }, &.{ 0, 0 });
+            sol.clause(&.{ c_torch, c_last }, &.{ 0, 0 });
 
             // -------- Blocks have less ID than the dust they are connected to
 
@@ -1301,12 +1395,12 @@ fn segmentTransitivity(
                 // The cardinal unary bit at <bit> for segment
                 const b = vars.segmentAt(opt, card).at(bit);
                 // (connected HERE & block THERE & bit THERE) -> lower bit HERE
-                cnf.clause(solver, &.{ p_con, c_block, b, a }, &.{ 0, 0, 0, 1 });
+                sol.clause(&.{ p_con, c_block, b, a }, &.{ 0, 0, 0, 1 });
             }
             // (connected HERE & block THERE) -----------> first unary bit HERE
-            cnf.clause(solver, &.{ p_con, c_block, p_first }, &.{ 0, 0, 1 });
+            sol.clause(&.{ p_con, c_block, p_first }, &.{ 0, 0, 1 });
             // (connected HERE & block THERE) --------> NO last unary bit THERE
-            cnf.clause(solver, &.{ p_con, c_block, c_last }, &.{ 0, 0, 0 });
+            sol.clause(&.{ p_con, c_block, c_last }, &.{ 0, 0, 0 });
 
             // ---- Redstone dust has less ID than cardinally connected torches
 
@@ -1316,12 +1410,12 @@ fn segmentTransitivity(
                 // The cardinal unary bit at <bit> for segment
                 const b = vars.segmentAt(opt, card).at(bit);
                 // (torch HERE & dust THERE & bit THERE) ------> lower bit HERE
-                cnf.clause(solver, &.{ p_torch, c_dust, b, a }, &.{ 0, 0, 0, 1 });
+                sol.clause(&.{ p_torch, c_dust, b, a }, &.{ 0, 0, 0, 1 });
             }
             // (torch HERE & dust THERE) ----------------> first unary bit HERE
-            cnf.clause(solver, &.{ p_torch, c_dust, p_first }, &.{ 0, 0, 1 });
+            sol.clause(&.{ p_torch, c_dust, p_first }, &.{ 0, 0, 1 });
             // (torch HERE & dust THERE) -------------> NO last unary bit THERE
-            cnf.clause(solver, &.{ p_torch, c_dust, c_last }, &.{ 0, 0, 0 });
+            sol.clause(&.{ p_torch, c_dust, c_last }, &.{ 0, 0, 0 });
         };
     }
 }

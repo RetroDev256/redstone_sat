@@ -9,11 +9,11 @@
     .length = 5,
     // truth table that the circuit must satisfy
     .truth = .{
-        .{ // SUM
-            .{ .{ 0, 0 }, 0 },
-            .{ .{ 0, 1 }, 1 },
-            .{ .{ 1, 0 }, 1 },
-            .{ .{ 1, 1 }, 0 },
+        .{
+            .{ .{ 0, 0 }, 1 },
+            .{ .{ 0, 1 }, 0 },
+            .{ .{ 1, 0 }, 0 },
+            .{ .{ 1, 1 }, 1 },
         },
     },
 
@@ -53,7 +53,7 @@
     // maximum number of redstone dusts
     .max_dust = null,
     // maximum number of redstone torches
-    .max_torch = null,
+    .max_torch = 4,
 
     // allow placement of north facing torches
     .allow_n_torch = true,
@@ -88,7 +88,9 @@
     .redirect_input_edge_dust = true,
     // whether to redirect output dust on the edges
     .redirect_output_edge_dust = true,
+    // edge dust redirects without any constraint
+    .override_edge_dust_any_redirect = false,
 
     // enforce acyclic graph with some bits per cell
-    .transition_bits = 32,
+    .transition_bits = 8,
 }
